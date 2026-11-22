@@ -20,8 +20,6 @@ from langgraph_checkpoint_cloudflare_d1.worker import WorkerCloudflareD1Saver
 
 from storage import d1
 
-_setup_done: set[int] = set()
-
 
 class D1CheckpointSaver(WorkerCloudflareD1Saver):
     def __init__(self, db: Any, *, serde: Any = None) -> None:
@@ -30,13 +28,9 @@ class D1CheckpointSaver(WorkerCloudflareD1Saver):
         super(WorkerCloudflareD1Saver, self).__init__(serde=serde)
         self.enable_logging = False
         self._db = db
-        self.is_setup = id(db) in _setup_done
-
-    async def setup(self) -> None:
-        if self.is_setup:
-            return
-        await super().setup()
-        _setup_done.add(id(self._db))
+        # Tables are created once per saver instance (CREATE TABLE IF NOT EXISTS);
+        # the app caches one saver per isolate, so this runs once per isolate.
+        self.is_setup = False
 
     async def _execute_query(
         self, query: str, params: Optional[Sequence[Any]] = None

@@ -12,7 +12,15 @@
   "env": {
     "staging": {
       "name": "tg-assistant-staging",
-      "vars": { "APP_ENV": "staging" },
+      "vars": {
+        "APP_ENV": "staging",
+        "DEFAULT_TIMEZONE": "America/Chicago",
+        "MODEL_CHAT": "gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite",
+        "MODEL_VISION": "gemini-3.5-flash,gemini-3.5-flash-lite",
+        "MODEL_TRANSCRIBE": "gemini-3.5-transcribe,gemini-3.5-flash-lite",
+        "MODEL_LIGHT": "gemini-3.5-flash-lite,gemini-3.1-flash-lite",
+        "MODEL_DEEP": "gemini-3.8-flash,gemini-3.7-flash,gemini-3.5-flash"
+      },
       "d1_databases": [
         {
           "binding": "DB",
@@ -24,7 +32,15 @@
     },
     "production": {
       "name": "tg-assistant",
-      "vars": { "APP_ENV": "production" },
+      "vars": {
+        "APP_ENV": "production",
+        "DEFAULT_TIMEZONE": "America/Chicago",
+        "MODEL_CHAT": "gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite",
+        "MODEL_VISION": "gemini-3.5-flash,gemini-3.5-flash-lite",
+        "MODEL_TRANSCRIBE": "gemini-3.5-transcribe,gemini-3.5-flash-lite",
+        "MODEL_LIGHT": "gemini-3.5-flash-lite,gemini-3.1-flash-lite",
+        "MODEL_DEEP": "gemini-3.8-flash,gemini-3.7-flash,gemini-3.5-flash"
+      },
       "d1_databases": [
         {
           "binding": "DB",

@@ -9,6 +9,7 @@ requests per probe, CPU time from Cloudflare's Workers analytics
 | noop | 20/20 | 0.17s | success (20) | 8.6 ms | 16.8 ms | 25.8 ms | 39.7 ms | 39.7 ms |
 | graph-int | 20/20 | 0.36s | success (20) | 67.9 ms | 91.8 ms | 134.3 ms | 182.9 ms | 182.9 ms |
 | graph-messages-growing | 20/20 | 0.51s | success (19) | 112.0 ms | 201.6 ms | 405.4 ms | 408.5 ms | 408.5 ms |
+| gemini (flash-lite, real API call) | 15/15 | 3.14s | success (15) | 161.8 ms | 243.5 ms | 349.2 ms | 476.0 ms | 476.0 ms |
 | graph-messages-fresh | 20/20 | 0.40s | success (20) | 58.0 ms | 84.5 ms | 108.0 ms | 176.3 ms | 176.3 ms |
 
 Probes:
@@ -16,14 +17,15 @@ Probes:
 - **graph-int** — Cloudflare's official example graph (int state) with our D1 saver.
 - **graph-messages-fresh** — agent → tool → agent loop with LangChain messages, new thread each call.
 - **graph-messages-growing** — same, one thread; history grows 4 messages per call (4 → 80).
-- **gemini** — not yet measured: the Gemini key secret on staging is empty (see below).
+- **gemini** — same graph with a real Gemini call (15 runs, growing thread).
 
 ## Findings
 
 1. **It works.** 80/80 requests succeeded, including multi-step graphs with tool calls,
    checkpointing to D1, and resuming a conversation across requests.
 2. **CPU is far above the documented 10 ms Free-plan limit**, yet requests were not
-   killed: graph runs take ~60–110 ms p50 and up to ~400 ms. Cloudflare evidently
+   killed: graph runs take ~60–110 ms p50 without the model call and ~160 ms p50 with a real
+   Gemini call (up to ~480 ms). Cloudflare evidently
    tolerates this today, but we are relying on undocumented slack. One earlier request
    *was* killed (`exceededResources`) at ~105 ms while importing SQLAlchemy lazily.
 3. **CPU grows with conversation length** (fresh 58 ms p50 → growing 112 ms p50,

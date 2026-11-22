@@ -20,8 +20,10 @@ def _js_null() -> Any:
     """JS ``null`` (Python ``None`` would cross the FFI as ``undefined``, which D1 rejects)."""
     global _JS_NULL
     if _JS_NULL is None:
-        from js import JSON  # type: ignore[import-not-found]
-
+        try:
+            from js import JSON  # type: ignore[import-not-found]
+        except ImportError:  # outside the Worker runtime (tests): plain None is fine
+            return None
         _JS_NULL = JSON.parse("null")
     return _JS_NULL
 

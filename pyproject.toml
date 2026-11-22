@@ -19,6 +19,7 @@ dependencies = [
     "tenacity",
     "langchain-core>=0.3.81,<1.0.0",
     "msgpack>=1.0",
+    "tzdata",  # zoneinfo data (America/Chicago) inside Pyodide
     # Do NOT add pydantic: use Pyodide's built-in build (pydantic_core is native).
 ]
 
@@ -38,7 +39,8 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-pythonpath = ["src"]
+asyncio_default_fixture_loop_scope = "function"
+pythonpath = ["src", "tests"]
 
 [tool.ruff]
 line-length = 100
