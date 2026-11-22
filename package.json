@@ -1,0 +1,12 @@
+{
+  "name": "tg-assistant",
+  "private": true,
+  "scripts": {
+    "build": "uv run pywrangler sync && bash ./scripts/setup_pyodide_deps.sh",
+    "deploy:staging": "npm run build && npx wrangler deploy --env staging",
+    "deploy:production": "npm run build && npx wrangler deploy --env production"
+  },
+  "devDependencies": {
+    "wrangler": "^4.58.0"
+  }
+}

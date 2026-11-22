@@ -1,0 +1,10 @@
+python_modules/
+.wheels_temp/
+.venv/
+node_modules/
+.wrangler/
+__pycache__/
+*.pyc
+.dev.vars
+.env
+.venv-workers/

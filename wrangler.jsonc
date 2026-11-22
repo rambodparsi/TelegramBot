@@ -1,0 +1,38 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tg-assistant",
+  "main": "src/entry.py",
+  // Matches the official langgraph-checkpoint-cloudflare-d1 example; bump only with a test run.
+  "compatibility_date": "2025-11-02",
+  "compatibility_flags": ["python_workers"],
+  "observability": { "enabled": true },
+  "workers_dev": true,
+
+  // Bindings are NOT inherited by environments, so each env declares its own.
+  "env": {
+    "staging": {
+      "name": "tg-assistant-staging",
+      "vars": { "APP_ENV": "staging" },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "tg-assistant-staging",
+          "database_id": "68b4b2a6-0901-40af-a23e-b6301eb5b81a",
+          "migrations_dir": "migrations"
+        }
+      ]
+    },
+    "production": {
+      "name": "tg-assistant",
+      "vars": { "APP_ENV": "production" },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "tg-assistant-prod",
+          "database_id": "ba28e46e-4860-448d-b693-1fe18ef3842a",
+          "migrations_dir": "migrations"
+        }
+      ]
+    }
+  }
+}
