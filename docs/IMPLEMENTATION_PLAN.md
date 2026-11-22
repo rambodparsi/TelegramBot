@@ -1,6 +1,6 @@
 # Implementation Plan — Personal AI Assistant (Version A)
 
-Status: draft for review · 2026-11-22
+Status: active · updated 2026-11-22 · Milestone 0 done (conditional go, see `benchmarks/RESULTS.md`)
 Companion to the architecture blueprint (v1.0). This document turns that blueprint into
 concrete, ordered work with exact versions, configs, schemas, and acceptance criteria.
 
@@ -14,7 +14,10 @@ concrete, ordered work with exact versions, configs, schemas, and acceptance cri
 | LLM | Gemini via a thin REST adapter (no `langchain-google-genai`) |
 | Interface | Telegram Bot API webhooks |
 | Async processing | Cloudflare Queues (one Worker with `fetch` + `queue` handlers) |
-| Storage | One D1 database: checkpoint tables (owned by the saver) + app tables (owned by us) |
+| Storage | One D1 database per environment: checkpoint tables (owned by the saver) + app tables (owned by us) |
+| Gemini tier | Free tier during development, synthetic data only |
+| Environments | `staging` (test bot) and `production` (real bot), separate Workers and D1 databases |
+| Locale | Default timezone `America/Chicago`; replies in English by default, Farsi when the user writes Farsi |
 
 ---
 
@@ -56,7 +59,13 @@ These were verified on 2026-11-22 by downloading the official package source
    langgraph-checkpoint 4.3.2). Do not take them until the pinned set works end to end.
 4. **Python Workers are still labelled beta** in Cloudflare's example. Expect API drift;
    pinning plus a smoke test in CI is mandatory.
-5. **`langgraph.prebuilt` (`ToolNode`) is not extracted by the example script.** We will
+5. **(M0) `WorkerCloudflareD1Saver` lazy-imports SQLAlchemy**, which alone blew the CPU
+   limit on a cold request, and it **silently swallows D1 errors**. We use our own
+   `D1CheckpointSaver` (`src/memory/checkpointer.py`) that talks to `env.DB` directly
+   and raises on failure. SQLAlchemy is no longer bundled.
+6. **(M0) Measured CPU** is 60–110 ms p50 per graph run — far above the documented
+   10 ms, but not killed by Cloudflare. Details and guardrails in `benchmarks/RESULTS.md`.
+7. **`langgraph.prebuilt` (`ToolNode`) is not extracted by the example script.** We will
    write our own small tool-execution node (blueprint §9.3, option 2) rather than add
    another package to the Pyodide build.
 
@@ -296,6 +305,30 @@ config={"configurable": {"thread_id": tid}}, durability=<from M0 results>)`.
 
 ---
 
+## 5b. Gemini model routing (free tier)
+
+Verified against the live model list on 2026-11-22. Pro models have **zero free-tier
+quota** on this key, so the plan uses Flash-family models only. Every role has a
+fallback chain; a 429 (quota) or 503 (overloaded — seen on 3.7/3.8 Flash today) moves
+to the next model automatically.
+
+| Role | Primary | Fallbacks | Notes |
+| --- | --- | --- | --- |
+| `chat` — main agent, tool calling | `gemini-3.5-flash` | `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite` | low thinking level to save tokens |
+| `vision` — photos, screenshots, receipts | `gemini-3.5-flash` | `gemini-3.5-flash-lite` | image sent once, never re-sent in later turns |
+| `transcribe` — voice notes | `gemini-3.5-transcribe` | `gemini-3.5-flash-lite` (audio input) | output is plain transcript, no reasoning |
+| `light` — summaries, titles, language detection, compaction | `gemini-3.5-flash-lite` | `gemini-3.1-flash-lite` | cheapest; never user-visible reasoning |
+| `deep` — opt-in hard questions (`/think …`) | `gemini-3.8-flash` | `gemini-3.7-flash` → `gemini-3.5-flash` | only when explicitly asked |
+
+Rules
+- Routing is **deterministic** (by input type and command), never by an extra LLM call.
+- Model IDs live in `wrangler.jsonc` `vars` (`MODEL_CHAT`, `MODEL_VISION`, …) so they can be
+  swapped without code changes. Aliases like `gemini-flash-latest` are avoided because
+  they silently change underneath us.
+- Token savings: trimmed context (last ~20 turns), summaries by the `light` model, tool
+  schemas only sent to the `chat` role, `maxOutputTokens` per role, media never repeated.
+- `usage_events` records model, tokens, and fallbacks so quota use is visible in `/status`.
+
 ## 6. D1 application schema (`migrations/0001_app_schema.sql`)
 
 ```sql
@@ -431,10 +464,11 @@ tests run under normal CPython.
 | Gemini free-tier rate limits | retry with backoff via queue; friendly "busy" message |
 | Gemini free-tier data use | synthetic data until the tier decision is made |
 
-## 11. Open questions for you
+## 11. Resolved decisions
 
-1. Gemini tier: stay on free during development (synthetic data only) — OK?
-2. Do you want a separate **test bot + staging Worker** from the start? (Recommended.)
-3. Your timezone and the bot's default reply language.
-4. How do you want to deploy during M0: run `pywrangler deploy` yourself, or add a
-   Cloudflare API token to this cloud environment so I can deploy and benchmark directly?
+1. Gemini free tier during development, synthetic data only; per-role model routing (§5b).
+2. Separate test bot + staging Worker from the start.
+3. Timezone `America/Chicago`; English default, Farsi supported (reply in the user's
+   language; Telegram HTML handles right-to-left text natively).
+4. Deployment from the cloud session with a Cloudflare API token; app secrets
+   (Telegram tokens, Gemini key) are set by the owner directly in Cloudflare.
