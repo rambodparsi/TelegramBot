@@ -16,8 +16,16 @@ class HttpResponse:
         return json.loads(self.text) if self.text else None
 
 
+@dataclass
+class BytesResponse:
+    status: int
+    content: bytes
+
+
 class Http(Protocol):
     async def post_json(self, url: str, payload: Any, headers: dict[str, str] | None = None) -> HttpResponse: ...
+
+    async def get_bytes(self, url: str) -> BytesResponse: ...
 
 
 class WorkerHttp:
@@ -33,3 +41,9 @@ class WorkerHttp:
             body=json.dumps(payload, ensure_ascii=False),
         )
         return HttpResponse(status=int(resp.status), text=await resp.text())
+
+    async def get_bytes(self, url: str) -> BytesResponse:
+        from workers import fetch
+
+        resp = await fetch(url, method="GET")
+        return BytesResponse(status=int(resp.status), content=await resp.bytes())

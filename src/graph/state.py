@@ -24,4 +24,6 @@ class Deps:
     context_turns: int = 20
     max_state_messages: int = 40
     run_id: str = "run"
+    # Media for the *current* turn only (Gemini parts). Never checkpointed.
+    attachments: list[dict[str, Any]] = field(default_factory=list)
     usage: list[dict[str, Any]] = field(default_factory=list)

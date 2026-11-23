@@ -49,6 +49,7 @@ class Config:
     models: dict[str, list[str]] = field(default_factory=dict)
     context_turns: int = 20
     max_state_messages: int = 40
+    max_media_bytes: int = 10 * 1024 * 1024
 
     def model_chain(self, role: str) -> list[str]:
         return self.models[role]
@@ -73,4 +74,5 @@ def load_config(env: Any) -> Config:
         models=models,
         context_turns=int(_get(env, "CONTEXT_TURNS") or 20),
         max_state_messages=int(_get(env, "MAX_STATE_MESSAGES") or 40),
+        max_media_bytes=int(float(_get(env, "MAX_MEDIA_MB") or 10) * 1024 * 1024),
     )

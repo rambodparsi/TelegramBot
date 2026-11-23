@@ -15,6 +15,7 @@
       "vars": {
         "APP_ENV": "staging",
         "DEFAULT_TIMEZONE": "America/Chicago",
+        "MAX_MEDIA_MB": "10",
         "MODEL_CHAT": "gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite",
         "MODEL_VISION": "gemini-3.5-flash,gemini-3.5-flash-lite",
         "MODEL_TRANSCRIBE": "gemini-3.5-transcribe,gemini-3.5-flash-lite",
@@ -35,6 +36,7 @@
       "vars": {
         "APP_ENV": "production",
         "DEFAULT_TIMEZONE": "America/Chicago",
+        "MAX_MEDIA_MB": "10",
         "MODEL_CHAT": "gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite",
         "MODEL_VISION": "gemini-3.5-flash,gemini-3.5-flash-lite",
         "MODEL_TRANSCRIBE": "gemini-3.5-transcribe,gemini-3.5-flash-lite",

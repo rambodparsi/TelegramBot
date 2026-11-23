@@ -22,14 +22,24 @@ def recent_window(messages: Sequence[AnyMessage], turns: int) -> list[AnyMessage
     return list(messages[first:])
 
 
+def _first_step_of_turn(messages: Sequence[AnyMessage]) -> bool:
+    return bool(messages) and isinstance(messages[-1], HumanMessage)
+
+
 async def agent(state: AssistantState, runtime: Runtime[Deps]) -> dict:
     deps = runtime.context
     window = recent_window(state["messages"], deps.context_turns)
+    contents = to_contents(window)
+    role = "chat"
+    if deps.attachments and _first_step_of_turn(state["messages"]) and contents and contents[-1]["role"] == "user":
+        # Media goes only into the current turn's request; history keeps the text marker.
+        contents[-1] = {"role": "user", "parts": [*deps.attachments, *contents[-1]["parts"]]}
+        role = "vision"
     result = await deps.llm.generate(
-        deps.models["chat"], to_contents(window), system=deps.system_prompt, max_output_tokens=2048
+        deps.models[role], contents, system=deps.system_prompt, max_output_tokens=2048
     )
     deps.usage.append({
-        "role": "chat", "model": result.model, "input_tokens": result.input_tokens,
+        "role": role, "model": result.model, "input_tokens": result.input_tokens,
         "output_tokens": result.output_tokens, "fallbacks": result.fallbacks,
     })
     message = to_ai_message(result.text, result.function_calls, result.parts, f"{deps.run_id}-{len(state['messages'])}")

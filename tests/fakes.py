@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from http_client import HttpResponse
+from http_client import BytesResponse, HttpResponse
 
 MIGRATIONS = Path(__file__).resolve().parents[1] / "migrations"
 
@@ -69,10 +69,21 @@ class FakeHttp:
         m = re.search(r"/models/([^:]+):generateContent", url)
         if m:
             return self._gemini(m.group(1), payload)
+        if url.endswith("/getFile"):
+            return HttpResponse(200, json.dumps({"ok": True, "result": {"file_path": f"files/{payload['file_id']}"}}))
         if "api.telegram.org" in url:
             self._next_id += 1
             return HttpResponse(200, json.dumps({"ok": True, "result": {"message_id": self._next_id}}))
         raise AssertionError(f"unexpected URL {url}")
+
+    files: dict[str, bytes] = {}
+
+    async def get_bytes(self, url: str) -> BytesResponse:
+        self.calls.append((url, None))
+        name = url.rsplit("/", 1)[-1]
+        if name not in self.files:
+            return BytesResponse(404, b"")
+        return BytesResponse(200, self.files[name])
 
     def telegram(self, method: str) -> list[dict]:
         return [p for u, p in self.calls if u.endswith("/" + method)]

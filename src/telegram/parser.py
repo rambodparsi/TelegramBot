@@ -58,6 +58,10 @@ def parse_update(update: dict[str, Any]) -> Inbound | None:
         v = msg["voice"]
         return Inbound(kind="voice", text=caption, file_id=v.get("file_id"), file_unique_id=v.get("file_unique_id"),
                        mime_type=v.get("mime_type", "audio/ogg"), file_size=v.get("file_size"), **base)
+    if isinstance(msg.get("audio"), dict):
+        a = msg["audio"]
+        return Inbound(kind="voice", text=caption, file_id=a.get("file_id"), file_unique_id=a.get("file_unique_id"),
+                       mime_type=a.get("mime_type"), file_size=a.get("file_size"), **base)
     if isinstance(msg.get("photo"), list) and msg["photo"]:
         p = max(msg["photo"], key=lambda s: s.get("file_size") or s.get("width", 0) * s.get("height", 0))
         return Inbound(kind="photo", text=caption, file_id=p.get("file_id"), file_unique_id=p.get("file_unique_id"),

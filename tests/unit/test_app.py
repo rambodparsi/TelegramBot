@@ -29,7 +29,7 @@ def env():
 
 async def test_answers_text_and_persists(env):
     db, http, svc = env
-    assert await app.handle_update(_update(1, "hello"), svc) == "answered"
+    assert await app.handle_update(_update(1, "hello"), svc) == "answered:text"
     assert http.telegram("sendMessage")[-1]["text"] == "Hello!"
     assert db.rows("SELECT role, content FROM messages ORDER BY id") == [("user", "hello"), ("assistant", "Hello!")]
     assert db.rows("SELECT status FROM telegram_updates") == [("done",)]
@@ -50,7 +50,7 @@ async def test_history_is_sent_on_next_turn_and_new_resets(env):
 
 async def test_duplicate_update_is_processed_once(env):
     _, http, svc = env
-    assert await app.handle_update(_update(1, "hi"), svc) == "answered"
+    assert await app.handle_update(_update(1, "hi"), svc) == "answered:text"
     assert await app.handle_update(_update(1, "hi"), svc) == "ignored:duplicate"
     assert len(http.gemini_calls()) == 1
 
