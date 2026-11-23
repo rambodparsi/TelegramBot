@@ -13,7 +13,7 @@ class Inbound:
     chat_type: str
     user_id: int
     message_id: int
-    kind: str                     # text|command|voice|photo|unsupported
+    kind: str                     # text|command|voice|photo|callback|unsupported
     text: str = ""                # text, caption, or command arguments
     command: str | None = None    # e.g. "new" for /new
     file_id: str | None = None
@@ -21,6 +21,7 @@ class Inbound:
     mime_type: str | None = None
     file_size: int | None = None
     language_code: str | None = None
+    callback_id: str | None = None   # callback_query id (kind == "callback"); text holds its data
 
     def to_state(self) -> dict[str, Any]:
         return asdict(self)
@@ -28,6 +29,17 @@ class Inbound:
 
 def parse_update(update: dict[str, Any]) -> Inbound | None:
     """Return a normalized message, or None for update types the bot ignores."""
+    cb = update.get("callback_query")
+    if isinstance(cb, dict):
+        sender, cb_msg = cb.get("from") or {}, cb.get("message") or {}
+        chat = cb_msg.get("chat") or {}
+        if "id" not in sender or "id" not in chat:
+            return None
+        return Inbound(update_id=int(update["update_id"]), chat_id=int(chat["id"]), chat_type=str(chat.get("type", "")),
+                       user_id=int(sender["id"]), message_id=int(cb_msg.get("message_id", 0)), kind="callback",
+                       text=str(cb.get("data", "")), callback_id=str(cb.get("id")),
+                       language_code=sender.get("language_code"))
+
     msg = update.get("message")
     if not isinstance(msg, dict):
         return None

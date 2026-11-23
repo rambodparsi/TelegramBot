@@ -2,23 +2,20 @@
 
 from __future__ import annotations
 
-import datetime as dt
 import html
 import logging
 import secrets
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from langchain_core.messages import HumanMessage
 
 from config import Config
-from graph.builder import build_graph
+from graph.builder import RECURSION_LIMIT, build_graph
 from graph.state import Deps
 from llm.gemini import GeminiClient
 from media.download import MediaError, download
 from media.transcribe import transcribe
 from memory.checkpointer import D1CheckpointSaver
-from prompts import MAIN_ASSISTANT
 from storage.repo import Repo
 from telegram.client import TelegramClient
 from telegram.format import render_chunks
@@ -28,11 +25,26 @@ log = logging.getLogger("assistant")
 
 HELP_EN = (
     "<b>Personal assistant</b>\n"
-    "Write to me in English or Farsi, send a voice message, or share a photo.\n\n"
+    "Write to me in English or Farsi, send a voice message, or share a photo.\n"
+    "Say \"remember that…\" to save something to long-term memory.\n\n"
     "/new — start a fresh conversation\n"
-    "/help — this message\n"
-    "/whoami — show your Telegram user ID"
+    "/memory — show what I remember about you\n"
+    "/forget — delete memories (<code>/forget 3</code> deletes one)\n"
+    "/deletehistory — permanently delete our chat history\n"
+    "/whoami — show your Telegram user ID\n"
+    "/help — this message"
 )
+BOT_COMMANDS = [("new", "Start a fresh conversation"), ("memory", "What I remember about you"),
+                ("forget", "Delete memories"), ("deletehistory", "Delete chat history"),
+                ("help", "How to use the assistant"), ("whoami", "Show your Telegram user ID")]
+BOT_COMMANDS_FA = [("new", "شروع گفتگوی جدید"), ("memory", "آنچه درباره شما به خاطر دارم"),
+                   ("forget", "حذف خاطره‌ها"), ("deletehistory", "حذف تاریخچه گفتگو"),
+                   ("help", "راهنما"), ("whoami", "نمایش شناسه تلگرام")]
+CONFIRM_TEXT = {
+    "delete_history": "🗑️ Permanently delete <b>all</b> chat history (messages and saved conversation state)?\n"
+                      "Your saved memories and preferences are kept (use /forget for those).",
+    "forget_all": "🧠 Permanently delete <b>all</b> saved memories and preferences?",
+}
 UNSUPPORTED = "Sorry, I can read text, voice messages, audio files and photos — not this kind of message yet."
 NO_SPEECH = "🎙️ I couldn't make out any speech in that voice message. Could you try again or type it?"
 
@@ -44,15 +56,8 @@ class Services:
         self.repo = Repo(db)
         self.telegram = TelegramClient(cfg.telegram_bot_token, http)
         self.llm = GeminiClient(cfg.gemini_api_key, http)
-        self.graph = build_graph(D1CheckpointSaver(db))
-
-
-def _system_prompt(cfg: Config) -> str:
-    try:
-        now = dt.datetime.now(ZoneInfo(cfg.timezone))
-    except Exception:
-        now = dt.datetime.now(dt.timezone.utc)
-    return MAIN_ASSISTANT.format(timezone=cfg.timezone, now=now.strftime("%A, %B %d, %Y %H:%M"))
+        self.saver = D1CheckpointSaver(db)
+        self.graph = build_graph(self.saver)
 
 
 async def _reply(svc: Services, chat_id: int, markdown: str, reply_to: int | None = None,
@@ -108,6 +113,8 @@ async def handle_update(update: dict[str, Any], svc: Services) -> str:
 async def _process(msg: Inbound, svc: Services) -> str:
     if msg.kind == "command":
         return await _command(msg, svc)
+    if msg.kind == "callback":
+        return await _callback(msg, svc)
     if msg.kind == "unsupported":
         await svc.telegram.send_message(msg.chat_id, UNSUPPORTED)
         return "unsupported"
@@ -159,7 +166,10 @@ async def _run_graph(msg: Inbound, svc: Services, human_text: str, attachments: 
     deps = Deps(
         llm=svc.llm,
         models=svc.cfg.models,
-        system_prompt=_system_prompt(svc.cfg),
+        repo=svc.repo,
+        user_id=msg.user_id,
+        update_id=msg.update_id,
+        default_timezone=svc.cfg.timezone,
         context_turns=svc.cfg.context_turns,
         max_state_messages=svc.cfg.max_state_messages,
         run_id=f"u{msg.update_id}",
@@ -168,21 +178,76 @@ async def _run_graph(msg: Inbound, svc: Services, human_text: str, attachments: 
     )
     result = await svc.graph.ainvoke(
         {"messages": [HumanMessage(human_text)], "current_input": msg.to_state(), "tool_call_count": 0},
-        {"configurable": {"thread_id": conv["thread_id"]}},
+        {"configurable": {"thread_id": conv["thread_id"]}, "recursion_limit": RECURSION_LIMIT},
         context=deps,
     )
     return result["final_response"], conv
 
 
 async def _command(msg: Inbound, svc: Services) -> str:
-    cmd = msg.command
+    cmd, tg = msg.command, svc.telegram
     if cmd in ("start", "help"):
-        await svc.telegram.send_message(msg.chat_id, HELP_EN)
-    elif cmd == "new":
+        await tg.send_message(msg.chat_id, HELP_EN)
+    elif cmd in ("new", "reset"):
         await svc.repo.new_conversation(msg.chat_id, msg.user_id)
-        await svc.telegram.send_message(msg.chat_id, "🆕 Started a fresh conversation.")
+        await tg.send_message(msg.chat_id, "🆕 Started a fresh conversation. (Your saved memories are kept.)")
     elif cmd == "whoami":
-        await svc.telegram.send_message(msg.chat_id, f"Your Telegram user ID is <code>{msg.user_id}</code>.")
+        await tg.send_message(msg.chat_id, f"Your Telegram user ID is <code>{msg.user_id}</code>.")
+    elif cmd == "memory":
+        await tg.send_message(msg.chat_id, _memory_html(await svc.repo.profile(msg.user_id)))
+    elif cmd == "forget" and msg.text.strip().lstrip("#").isdigit():
+        fact_id = int(msg.text.strip().lstrip("#"))
+        removed = await svc.repo.delete_fact(msg.user_id, fact_id)
+        await tg.send_message(msg.chat_id, f"🗑️ Deleted memory #{fact_id}." if removed
+                              else f"I couldn't find memory #{fact_id}. See /memory.")
+    elif cmd in ("forget", "deletehistory"):
+        action = "forget_all" if cmd == "forget" else "delete_history"
+        token = await svc.repo.create_pending(msg.chat_id, action)
+        await tg.send_message(msg.chat_id, CONFIRM_TEXT[action] + "\n<i>This button expires in 10 minutes.</i>",
+                              buttons=[[("Yes, delete", f"ok:{token}"), ("Cancel", f"no:{token}")]])
     else:
-        await svc.telegram.send_message(msg.chat_id, "Unknown command. Try /help.")
+        await tg.send_message(msg.chat_id, "Unknown command. Try /help.")
     return f"command:{cmd}"
+
+
+def _memory_html(profile: dict) -> str:
+    prefs, facts = profile["preferences"], profile["facts"]
+    if not prefs and not facts:
+        return "🧠 I don't have any saved memories or preferences yet.\nTell me \"remember that…\" to save one."
+    lines = ["🧠 <b>What I remember</b>"]
+    if prefs:
+        lines.append("\n<b>Preferences</b>")
+        lines += [f"• {html.escape(k)}: {html.escape(v)}" for k, v in prefs.items()]
+    if facts:
+        lines.append("\n<b>Memories</b>")
+        lines += [f"<code>#{f['id']}</code> {html.escape(f['content'])}" for f in facts]
+        lines.append("\n<i>Delete one with /forget &lt;number&gt;, or everything with /forget.</i>")
+    return "\n".join(lines)
+
+
+async def _callback(msg: Inbound, svc: Services) -> str:
+    verb, _, token = msg.text.partition(":")
+    action = await svc.repo.consume_pending(token, msg.chat_id) if token else None
+    tg = svc.telegram
+    if action is None:
+        await tg.answer_callback(msg.callback_id or "", "This confirmation has expired or was already used.")
+        await tg.edit_message(msg.chat_id, msg.message_id, "⌛ This confirmation is no longer valid.")
+        return "callback:invalid"
+    if verb != "ok":
+        await tg.answer_callback(msg.callback_id or "", "Cancelled")
+        await tg.edit_message(msg.chat_id, msg.message_id, "Cancelled — nothing was deleted.")
+        return f"callback:cancel:{action}"
+
+    if action == "delete_history":
+        threads = await svc.repo.delete_history(msg.chat_id)
+        for thread_id in threads:
+            await svc.saver.adelete_thread(thread_id)
+        done = f"🗑️ Deleted {len(threads)} conversation(s) and their saved state."
+    elif action == "forget_all":
+        await svc.repo.forget_everything(msg.user_id)
+        done = "🧠 All saved memories and preferences were deleted."
+    else:
+        done = "Nothing to do."
+    await tg.answer_callback(msg.callback_id or "", "Done")
+    await tg.edit_message(msg.chat_id, msg.message_id, done)
+    return f"callback:{action}"

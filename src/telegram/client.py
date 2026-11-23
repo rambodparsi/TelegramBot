@@ -30,9 +30,12 @@ class TelegramClient:
         return data.get("result")
 
     async def send_message(self, chat_id: int, html_text: str, *, plain_fallback: str | None = None,
-                           reply_to: int | None = None) -> int:
+                           reply_to: int | None = None, buttons: list[list[tuple[str, str]]] | None = None) -> int:
         payload: dict[str, Any] = {"chat_id": chat_id, "text": html_text, "parse_mode": "HTML",
                                    "link_preview_options": {"is_disabled": True}}
+        if buttons:
+            payload["reply_markup"] = {"inline_keyboard": [
+                [{"text": label, "callback_data": data} for label, data in row] for row in buttons]}
         if reply_to:
             payload["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
         try:
@@ -45,6 +48,23 @@ class TelegramClient:
             payload["text"] = plain_fallback
             result = await self.call("sendMessage", payload)
         return int(result["message_id"])
+
+    async def answer_callback(self, callback_id: str, text: str | None = None) -> None:
+        payload: dict[str, Any] = {"callback_query_id": callback_id}
+        if text:
+            payload["text"] = text
+        try:
+            await self.call("answerCallbackQuery", payload)
+        except TelegramError:
+            pass
+
+    async def edit_message(self, chat_id: int, message_id: int, html_text: str) -> None:
+        """Replace a message's text and remove its buttons."""
+        try:
+            await self.call("editMessageText", {"chat_id": chat_id, "message_id": message_id, "text": html_text,
+                                                "parse_mode": "HTML", "reply_markup": {"inline_keyboard": []}})
+        except TelegramError:
+            pass  # message too old or unchanged
 
     async def send_typing(self, chat_id: int) -> None:
         try:

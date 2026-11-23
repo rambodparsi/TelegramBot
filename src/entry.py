@@ -109,11 +109,8 @@ class Default(WorkerEntrypoint):
                     return Response.json({"error": "TELEGRAM_WEBHOOK_SECRET is not set"}, status=400)
                 hook = f"{url.scheme}://{url.netloc}/telegram/webhook"
                 await svc.telegram.set_webhook(hook, svc.cfg.telegram_webhook_secret)
-                commands = [("new", "Start a fresh conversation"), ("help", "How to use the assistant"),
-                            ("whoami", "Show your Telegram user ID")]
-                await svc.telegram.set_my_commands(commands)
-                await svc.telegram.set_my_commands(
-                    [("new", "شروع گفتگوی جدید"), ("help", "راهنما"), ("whoami", "نمایش شناسه تلگرام")], "fa")
+                await svc.telegram.set_my_commands(app.BOT_COMMANDS)
+                await svc.telegram.set_my_commands(app.BOT_COMMANDS_FA, "fa")
                 return Response.json({"ok": True, "webhook": hook})
             if path == "/admin/webhook-info":
                 return Response.json(await svc.telegram.get_webhook_info())
