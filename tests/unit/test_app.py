@@ -76,7 +76,7 @@ async def test_model_failure_sends_apology_and_marks_failed():
     svc = app.Services(_cfg(), db, http)
     status = await app.handle_update(_update(1, "hi"), svc)
     assert status.startswith("failed:")
-    assert "something went wrong" in http.telegram("sendMessage")[-1]["text"]
+    assert "busy or out of free quota" in http.telegram("sendMessage")[-1]["text"]
     assert db.rows("SELECT status FROM telegram_updates") == [("failed",)]
 
 

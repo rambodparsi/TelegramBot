@@ -5,7 +5,10 @@ Routes
   GET  /health                liveness
   POST /admin/setup-webhook   register webhook + bot commands   (x-admin-token)
   GET  /admin/webhook-info    Telegram's view of the webhook    (x-admin-token)
-  GET  /bench/*               Milestone 0 probes                (x-bench-token)
+  GET  /bench/*               Milestone 0 probes (staging only) (x-bench-token)
+
+Queue consumer: processes Telegram updates one at a time with retries.
+Cron: daily data-retention cleanup.
 
 All heavy imports are at module top level on purpose: they are captured in the
 deploy-time memory snapshot instead of being billed to a request's CPU time.
@@ -20,13 +23,17 @@ import logging
 import traceback
 from urllib.parse import parse_qs, urlparse
 
-from pyodide.ffi import create_proxy
+from js import Object
+from pyodide.ffi import create_proxy, to_js
 from workers import Response, WorkerEntrypoint
 
 import app
 import bench
 from config import ConfigError, load_config
 from http_client import WorkerHttp
+from telegram.parser import parse_update
+
+MAX_ATTEMPTS = 4  # must match the queue consumer's max_retries + 1 in wrangler.jsonc
 
 log = logging.getLogger("assistant")
 
@@ -68,7 +75,7 @@ class Default(WorkerEntrypoint):
         if path.startswith("/admin/"):
             return await self._admin(request, path, url)
 
-        if path.startswith("/bench/"):
+        if path.startswith("/bench/") and getattr(self.env, "APP_ENV", "") != "production":
             return await self._bench(request, path, url)
 
         return Response("Not found", status=404)
@@ -86,15 +93,52 @@ class Default(WorkerEntrypoint):
         except ValueError:
             return Response("Bad request", status=400)
 
-        async def run():
-            try:
-                status = await app.handle_update(update, svc)
-                log.info("update %s -> %s", update.get("update_id"), status)
-            except Exception:
-                log.error("unhandled error: %s", traceback.format_exc()[-1500:])
+        # Cheap pre-filter so strangers' messages never cost queue operations.
+        msg = parse_update(update)
+        allowlist = svc.cfg.authorized_user_ids
+        if msg is None or (allowlist and msg.user_id not in allowlist):
+            return Response("ok")
 
-        self._background(run())
+        queue = getattr(self.env, "MESSAGE_QUEUE", None)
+        if queue is None:  # no queue bound: process after responding (dev fallback)
+            self._background(self._run_update(update, svc, 1, 1))
+            return Response("ok")
+        try:
+            await queue.send(json.dumps(update))
+        except Exception as exc:
+            # Telegram redelivers on non-2xx, so nothing is lost.
+            log.error("enqueue failed: %s: %s", type(exc).__name__, exc)
+            return Response("enqueue failed", status=500)
+        if msg.kind in ("text", "voice", "photo") and msg.user_id in allowlist:
+            self._background(svc.telegram.send_typing(msg.chat_id))  # instant feedback while queued
         return Response("ok")
+
+    @staticmethod
+    async def _run_update(update, svc, attempt, max_attempts):
+        status = await app.handle_update(update, svc, attempt=attempt, max_attempts=max_attempts)
+        log.info("update %s attempt %s -> %s", update.get("update_id"), attempt, status)
+        return status
+
+    async def queue(self, batch):
+        svc = self._services()
+        for message in batch.messages:
+            try:
+                update = json.loads(str(message.body))
+                await self._run_update(update, svc, int(message.attempts), MAX_ATTEMPTS)
+                message.ack()
+            except app.RetryLater as wait:
+                message.retry(to_js({"delaySeconds": wait.delay}, dict_converter=Object.fromEntries))
+            except Exception:
+                # handle_update already reported the failure to the user; never redeliver poison.
+                log.error("queue message failed: %s", traceback.format_exc()[-1500:])
+                message.ack()
+
+    async def scheduled(self, controller, *args):
+        try:
+            await self._services().repo.cleanup()
+            log.info("daily cleanup done")
+        except Exception:
+            log.error("cleanup failed: %s", traceback.format_exc()[-1500:])
 
     async def _admin(self, request, path, url):
         try:

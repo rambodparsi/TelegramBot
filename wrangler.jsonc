@@ -29,7 +29,19 @@
           "database_id": "68b4b2a6-0901-40af-a23e-b6301eb5b81a",
           "migrations_dir": "migrations"
         }
-      ]
+      ],
+      "queues": {
+        "producers": [{ "binding": "MESSAGE_QUEUE", "queue": "tg-assistant-staging-jobs" }],
+        "consumers": [{
+          "queue": "tg-assistant-staging-jobs",
+          "max_batch_size": 1,          // one update at a time: keeps a chat's messages in order
+          "max_batch_timeout": 0,
+          "max_concurrency": 1,
+          "max_retries": 3,             // keep in sync with MAX_ATTEMPTS in src/entry.py
+          "dead_letter_queue": "tg-assistant-staging-dlq"
+        }]
+      },
+      "triggers": { "crons": ["17 9 * * *"] }
     },
     "production": {
       "name": "tg-assistant",
@@ -50,7 +62,19 @@
           "database_id": "ba28e46e-4860-448d-b693-1fe18ef3842a",
           "migrations_dir": "migrations"
         }
-      ]
+      ],
+      "queues": {
+        "producers": [{ "binding": "MESSAGE_QUEUE", "queue": "tg-assistant-jobs" }],
+        "consumers": [{
+          "queue": "tg-assistant-jobs",
+          "max_batch_size": 1,          // one update at a time: keeps a chat's messages in order
+          "max_batch_timeout": 0,
+          "max_concurrency": 1,
+          "max_retries": 3,             // keep in sync with MAX_ATTEMPTS in src/entry.py
+          "dead_letter_queue": "tg-assistant-dlq"
+        }]
+      },
+      "triggers": { "crons": ["17 9 * * *"] }
     }
   }
 }

@@ -13,22 +13,75 @@ class Repo:
         self.db = db
 
     # --- updates (dedup) ----------------------------------------------------
-    async def claim_update(self, update_id: int, chat_id: int | None) -> bool:
-        """True if this update is new; False if it was already seen."""
-        row = await d1.first(
+    async def claim_update(self, update_id: int, chat_id: int | None, lease_minutes: int = 3) -> dict | None:
+        """Claim an update for processing.
+
+        Returns the update row if this worker may process it: either it is new, or a
+        previous attempt asked for a retry, or a previous attempt's lease went stale
+        (crashed mid-way). Returns None for duplicates that are done or in progress.
+        """
+        return await d1.first(
             self.db,
-            "INSERT INTO telegram_updates (update_id, chat_id, status) VALUES (?, ?, 'received') "
-            "ON CONFLICT(update_id) DO NOTHING RETURNING update_id",
+            "INSERT INTO telegram_updates (update_id, chat_id, status) VALUES (?, ?, 'processing') "
+            "ON CONFLICT(update_id) DO UPDATE SET status = 'processing', attempts = attempts + 1, "
+            "updated_at = datetime('now') "
+            "WHERE telegram_updates.status = 'retry' OR (telegram_updates.status = 'processing' "
+            f"AND telegram_updates.updated_at < datetime('now', '-{int(lease_minutes)} minutes')) "
+            "RETURNING update_id, attempts, response, response_prefix, conversation_id, kind, user_text",
             [update_id, chat_id],
         )
-        return row is not None
 
-    async def finish_update(self, update_id: int, status: str, error: str | None = None) -> None:
+    async def save_response(self, update_id: int, conversation_id: str, kind: str, user_text: str,
+                            response: str, prefix: str) -> None:
         await d1.execute(
             self.db,
-            "UPDATE telegram_updates SET status = ?, last_error = ?, updated_at = datetime('now') WHERE update_id = ?",
-            [status, error[:500] if error else None, update_id],
+            "UPDATE telegram_updates SET response = ?, response_prefix = ?, conversation_id = ?, kind = ?, "
+            "user_text = ?, updated_at = datetime('now') WHERE update_id = ?",
+            [response, prefix, conversation_id, kind, user_text, update_id],
         )
+
+    async def finish_update(self, update_id: int, status: str, error: str | None = None) -> None:
+        # Once done, the stored reply text is no longer needed: drop it (privacy).
+        await d1.execute(
+            self.db,
+            "UPDATE telegram_updates SET status = ?, last_error = ?, updated_at = datetime('now'), "
+            "response = CASE WHEN ? = 'done' THEN NULL ELSE response END, "
+            "user_text = CASE WHEN ? = 'done' THEN NULL ELSE user_text END WHERE update_id = ?",
+            [status, error[:500] if error else None, status, status, update_id],
+        )
+
+    # --- status & maintenance -------------------------------------------------------
+    async def status_summary(self, user_id: int) -> dict[str, Any]:
+        updates = await d1.query(
+            self.db,
+            "SELECT status, count(*) AS n, sum(attempts - 1) AS retries FROM telegram_updates "
+            "WHERE received_at > datetime('now', '-1 day') GROUP BY status")
+        usage = await d1.query(
+            self.db,
+            "SELECT role, model, count(*) AS calls, sum(coalesce(input_tokens, 0)) AS tin, "
+            "sum(coalesce(output_tokens, 0)) AS tout, sum(fallbacks) AS fb FROM usage_events "
+            "WHERE created_at > datetime('now', '-1 day') GROUP BY role, model ORDER BY calls DESC")
+        tools = await d1.first(
+            self.db,
+            "SELECT count(*) AS n, sum(status != 'ok') AS bad FROM tool_executions WHERE created_at > datetime('now', '-1 day')")
+        memory = await d1.first(
+            self.db,
+            "SELECT (SELECT count(*) FROM memory_facts WHERE user_id = ?) AS facts, "
+            "(SELECT count(*) FROM user_preferences WHERE user_id = ?) AS prefs", [user_id, user_id])
+        return {"updates": updates, "usage": usage, "tools": tools or {}, "memory": memory or {}}
+
+    async def cleanup(self) -> None:
+        """Retention policy (runs daily from the cron trigger)."""
+        for sql in (
+            "DELETE FROM telegram_updates WHERE received_at < datetime('now', '-30 days')",
+            "DELETE FROM pending_actions WHERE expires_at < datetime('now', '-1 day')",
+            "DELETE FROM usage_events WHERE created_at < datetime('now', '-180 days')",
+            "DELETE FROM tool_executions WHERE created_at < datetime('now', '-180 days')",
+            # stored replies of updates that ended up failed are not needed after a day
+            "UPDATE telegram_updates SET response = NULL, user_text = NULL "
+            "WHERE status != 'processing' AND status != 'retry' AND updated_at < datetime('now', '-1 day')",
+        ):
+            await d1.execute(self.db, sql)
 
     # --- conversations --------------------------------------------------------
     async def active_conversation(self, chat_id: int, user_id: int) -> dict[str, Any]:
