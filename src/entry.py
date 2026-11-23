@@ -190,7 +190,9 @@ class Default(WorkerEntrypoint):
                                   profile={"preferences": {}, "facts": []},
                                   default_timezone="America/Chicago",
                                   llm=GeminiClient(str(self.env.GEMINI_API_KEY), WorkerHttp()),
-                                  models=models, usage=usage)
+                                  models=models, usage=usage, http=WorkerHttp(),
+                                  tavily_api_key=getattr(self.env, "TAVILY_API_KEY", None) and str(self.env.TAVILY_API_KEY),
+                                  search_provider=q.get("provider", "tavily"))
                 if q.get("raw"):
                     from llm.gemini import GeminiError
                     try:
@@ -199,6 +201,9 @@ class Default(WorkerEntrypoint):
                         out = {"text": r.text[:300], "sources": r.sources[:3], "model": r.model}
                     except GeminiError as exc:
                         out = {"status": exc.status, "error": str(exc)[:900]}
+                elif q.get("weather"):
+                    from tools.registry import _weather
+                    out = {"result": await _weather(ctx, {"location": q["weather"]})}
                 else:
                     out = {"result": await _web_search(ctx, {"query": q.get("q", "weather Chicago tomorrow")}),
                            "usage": usage}

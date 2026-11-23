@@ -21,7 +21,9 @@
         "MODEL_TRANSCRIBE": "gemini-3.5-transcribe,gemini-3.5-flash-lite",
         "MODEL_LIGHT": "gemini-3.5-flash-lite,gemini-3.1-flash-lite",
         "MODEL_DEEP": "gemini-3.8-flash,gemini-3.7-flash,gemini-3.5-flash",
-        "MODEL_SEARCH": "gemini-3.5-flash,gemini-3.5-flash-lite"
+        "MODEL_SEARCH": "gemini-3.5-flash,gemini-3.5-flash-lite",
+        // tavily | gemini (Google Search grounding; needs quota) | auto (gemini, then tavily)
+        "SEARCH_PROVIDER": "tavily"
       },
       "d1_databases": [
         {
@@ -55,7 +57,9 @@
         "MODEL_TRANSCRIBE": "gemini-3.5-transcribe,gemini-3.5-flash-lite",
         "MODEL_LIGHT": "gemini-3.5-flash-lite,gemini-3.1-flash-lite",
         "MODEL_DEEP": "gemini-3.8-flash,gemini-3.7-flash,gemini-3.5-flash",
-        "MODEL_SEARCH": "gemini-3.5-flash,gemini-3.5-flash-lite"
+        "MODEL_SEARCH": "gemini-3.5-flash,gemini-3.5-flash-lite",
+        // tavily | gemini (Google Search grounding; needs quota) | auto (gemini, then tavily)
+        "SEARCH_PROVIDER": "tavily"
       },
       "d1_databases": [
         {

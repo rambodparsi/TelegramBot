@@ -221,6 +221,9 @@ async def _run_graph(msg: Inbound, svc: Services, human_text: str, attachments: 
         run_id=f"u{msg.update_id}",
         attachments=attachments,
         usage=usage,
+        http=svc.http,
+        tavily_api_key=svc.cfg.tavily_api_key,
+        search_provider=svc.cfg.search_provider,
     )
     result = await svc.graph.ainvoke(
         {"messages": [HumanMessage(human_text)], "current_input": msg.to_state(), "tool_call_count": 0},
