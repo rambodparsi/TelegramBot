@@ -1,0 +1,47 @@
+[project]
+name = "tg-assistant"
+version = "0.1.0"
+description = "Personal multimodal Telegram AI assistant (LangGraph + Gemini on Cloudflare Python Workers)"
+readme = "README.md"
+requires-python = ">=3.12"
+# Installed into the Worker bundle by `pywrangler sync`.
+# langgraph / langchain-core / langgraph-checkpoint / langgraph-sdk are NOT resolved from
+# here at their real versions: scripts/setup_pyodide_deps.sh replaces them with pinned
+# wheels and swaps native deps (ormsgpack, xxhash, uuid_utils, websockets) for ./shims.
+dependencies = [
+    "webtypy>=0.1.7",
+    # langgraph-checkpoint-cloudflare-d1==0.1.6 itself is extracted by the setup script
+    # (its dependency chain pulls ormsgpack, which has no Pyodide wheel). We use it with
+    # our own D1 connection layer (src/memory/checkpointer.py), so sqlalchemy is NOT
+    # installed. These are the modules its package __init__ still imports.
+    "httpx",
+    "requests",
+    "tenacity",
+    "langchain-core>=0.3.81,<1.0.0",
+    "msgpack>=1.0",
+    "tzdata",  # zoneinfo data (America/Chicago) inside Pyodide
+    # Do NOT add pydantic: use Pyodide's built-in build (pydantic_core is native).
+]
+
+[dependency-groups]
+dev = [
+    "workers-py>=1.16.4,<2",
+    "workers-runtime-sdk",
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.8",
+]
+
+# Unit tests run against real CPython builds of the pinned stack, which conflict with
+# the Pyodide-oriented langchain-core<1 pin above, so they live in requirements-test.txt:
+#   uv run --isolated --no-project --with-requirements requirements-test.txt pytest
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+pythonpath = ["src", "tests"]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["python_modules", "shims/websockets"]

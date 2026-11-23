@@ -1,0 +1,11 @@
+# CPython versions of the exact stack the Worker bundles (see scripts/setup_pyodide_deps.sh).
+langgraph-checkpoint-cloudflare-d1==0.1.6
+langgraph==1.2.11
+langgraph-checkpoint==4.2.0
+langgraph-sdk==0.4.2
+langchain-core==1.5.4
+msgpack>=1.0
+ormsgpack>=1.12
+pytest>=8
+pytest-asyncio>=0.23
+tzdata

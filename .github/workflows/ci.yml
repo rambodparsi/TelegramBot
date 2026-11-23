@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.9"
+      - name: Unit tests (CPython, pinned LangGraph stack)
+        run: uv run --isolated --no-project --python 3.13 --with-requirements requirements-test.txt pytest -q -W ignore
+
+  build:
+    # Builds the exact Pyodide bundle and validates the Worker config without deploying.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.9"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build Worker bundle
+        run: |
+          uv sync
+          uv run pywrangler sync
+          bash scripts/setup_pyodide_deps.sh
+      - name: Validate config (dry run)
+        run: npx wrangler deploy --dry-run --env staging --outdir dist
+        env:
+          WRANGLER_SEND_METRICS: "false"

@@ -1,0 +1,66 @@
+name: Deploy
+
+# Manual only. Pick the environment when running the workflow.
+# Requires repository secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID.
+# Tip: add required reviewers to the "production" GitHub environment.
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options: [staging, production]
+      apply_migrations:
+        description: Apply pending D1 migrations first
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.9"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Tests
+        run: uv run --isolated --no-project --python 3.13 --with-requirements requirements-test.txt pytest -q -W ignore
+      - name: Build Worker bundle
+        run: |
+          uv sync
+          uv run pywrangler sync
+          bash scripts/setup_pyodide_deps.sh
+      - name: Apply D1 migrations
+        if: ${{ inputs.apply_migrations }}
+        run: |
+          DB=$([ "${{ inputs.environment }}" = production ] && echo tg-assistant-prod || echo tg-assistant-staging)
+          npx wrangler d1 migrations apply "$DB" --env "${{ inputs.environment }}" --remote
+      - name: Deploy
+        run: npx wrangler deploy --env "${{ inputs.environment }}"
+      - name: Health check
+        run: |
+          HOST=$([ "${{ inputs.environment }}" = production ] && echo tg-assistant || echo tg-assistant-staging)
+          for i in 1 2 3 4 5; do
+            curl -fsS -A deploy-check "https://$HOST.iamrambod.workers.dev/health" && exit 0
+            sleep 5
+          done
+          exit 1
