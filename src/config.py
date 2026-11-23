@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-MODEL_ROLES = ("chat", "vision", "transcribe", "light", "deep")
+MODEL_ROLES = ("chat", "vision", "transcribe", "light", "deep", "search")
 
 DEFAULT_MODELS = {
     "chat": "gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite",
@@ -13,6 +13,7 @@ DEFAULT_MODELS = {
     "transcribe": "gemini-3.5-transcribe,gemini-3.5-flash-lite",
     "light": "gemini-3.5-flash-lite,gemini-3.1-flash-lite",
     "deep": "gemini-3.8-flash,gemini-3.7-flash,gemini-3.5-flash",
+    "search": "gemini-3.5-flash,gemini-3.5-flash-lite",
 }
 
 

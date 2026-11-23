@@ -178,6 +178,30 @@ class Default(WorkerEntrypoint):
             elif path == "/bench/gemini":
                 out = await bench.graph_gemini(self.env.DB, thread, text, str(self.env.GEMINI_API_KEY),
                                                q.get("model", "gemini-3.5-flash-lite"))
+            elif path == "/bench/search":
+                from config import DEFAULT_MODELS
+                from llm.gemini import GeminiClient
+                from tools.registry import ToolContext, _web_search
+                usage: list = []
+                models = {k: v.split(",") for k, v in DEFAULT_MODELS.items()}
+                if q.get("model"):
+                    models["search"] = [q["model"]]
+                ctx = ToolContext(repo=None, user_id=0, update_id=None,
+                                  profile={"preferences": {}, "facts": []},
+                                  default_timezone="America/Chicago",
+                                  llm=GeminiClient(str(self.env.GEMINI_API_KEY), WorkerHttp()),
+                                  models=models, usage=usage)
+                if q.get("raw"):
+                    from llm.gemini import GeminiError
+                    try:
+                        r = await ctx.llm.generate(models["search"], [{"role": "user", "parts": [{"text": q.get("q", "weather Chicago tomorrow")}]}],
+                                                   tools=[{"google_search": {}}], max_output_tokens=512)
+                        out = {"text": r.text[:300], "sources": r.sources[:3], "model": r.model}
+                    except GeminiError as exc:
+                        out = {"status": exc.status, "error": str(exc)[:900]}
+                else:
+                    out = {"result": await _web_search(ctx, {"query": q.get("q", "weather Chicago tomorrow")}),
+                           "usage": usage}
             elif path == "/bench/checkpoint-size":
                 out = await bench.checkpoint_size(self.env.DB, thread)
             else:
