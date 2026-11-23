@@ -119,7 +119,7 @@ class Default(WorkerEntrypoint):
         log.info("update %s attempt %s -> %s", update.get("update_id"), attempt, status)
         return status
 
-    async def queue(self, batch):
+    async def queue(self, batch, *args):  # runtime passes (batch, env, ctx)
         svc = self._services()
         for message in batch.messages:
             try:

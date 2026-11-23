@@ -55,7 +55,13 @@ jobs:
           DB=$([ "${{ inputs.environment }}" = production ] && echo tg-assistant-prod || echo tg-assistant-staging)
           npx wrangler d1 migrations apply "$DB" --env "${{ inputs.environment }}" --remote
       - name: Deploy
-        run: npx wrangler deploy --env "${{ inputs.environment }}"
+        # Retried once: the first deploy of a new Worker can fail while Cloudflare
+        # registers it (code 10007) even though the upload succeeded.
+        run: |
+          npx wrangler deploy --env "${{ inputs.environment }}" || {
+            echo "Deploy failed; retrying in 15s"; sleep 15
+            npx wrangler deploy --env "${{ inputs.environment }}"
+          }
       - name: Health check
         run: |
           HOST=$([ "${{ inputs.environment }}" = production ] && echo tg-assistant || echo tg-assistant-staging)
