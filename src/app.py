@@ -432,3 +432,51 @@ async def _callback(msg: Inbound, svc: Services) -> str:
     await tg.answer_callback(msg.callback_id or "", "Done")
     await tg.edit_message(msg.chat_id, msg.message_id, done)
     return f"callback:{action}"
+
+
+# --- Planner daily rhythm (hourly cron) -------------------------------------------------------
+
+async def planner_tick(svc: Services, now_utc: dt.datetime | None = None) -> str:
+    """Send the morning brief / evening check-in at the owner's configured local hours (once per day)."""
+    from planner.briefing import evening_checkin, morning_brief
+
+    cfg = svc.cfg
+    if svc.sheets is None or not cfg.authorized_user_ids:
+        return "planner:off"
+    if cfg.planner_brief_hour is None and cfg.planner_checkin_hour is None:
+        return "planner:no_hours"
+    owner = min(cfg.authorized_user_ids)
+    profile = await svc.repo.profile(owner)
+    tz_name = profile["preferences"].get("timezone") or cfg.timezone
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = ZoneInfo(cfg.timezone)
+    now_utc = now_utc or dt.datetime.now(dt.timezone.utc)
+    local = now_utc.astimezone(tz)
+    if local.hour == cfg.planner_brief_hour:
+        kind = "brief"
+    elif local.hour == cfg.planner_checkin_hour:
+        kind = "checkin"
+    else:
+        return "planner:idle"
+    key = f"{kind}:{local.date().isoformat()}"
+    existing = await svc.repo.get_op(key)
+    if existing and existing["status"] == "done":
+        return f"planner:{kind}:already_sent"
+    await svc.repo.start_op(key)
+
+    planner = svc.planner_for(tz_name)
+    if svc.clock is None:  # pin "now" to the cron's moment in the owner's timezone
+        planner.now = local.replace(tzinfo=None, second=0, microsecond=0)
+        planner.today = planner.now.date()
+    agenda = await planner.get_agenda(planner.today)
+    text, plain = morning_brief(agenda) if kind == "brief" else evening_checkin(agenda)
+    sent_id = await svc.telegram.send_message(owner, text)
+    # Put it in the conversation so replies like "move the rest to tomorrow" have context.
+    conv = await svc.repo.active_conversation(owner, owner)
+    await svc.graph.aupdate_state({"configurable": {"thread_id": conv["thread_id"]}},
+                                  {"messages": [AIMessage(content=plain)]}, as_node="finalize")
+    await svc.repo.add_message(conv["id"], "assistant", "text", plain, telegram_message_id=sent_id)
+    await svc.repo.finish_op(key, {"ok": True, "sent": kind})
+    return f"planner:{kind}:sent"
