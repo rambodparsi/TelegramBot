@@ -31,6 +31,8 @@ async def run_tool_call(call: dict[str, Any], ctx: ToolContext) -> ToolMessage:
         await ctx.repo.log_tool(ctx.update_id, name, digest, "rejected", str(exc))
         return _msg(call_id, name, {"error": str(exc)})
     except Exception as exc:  # a failed write must never look like success
+        if getattr(exc, "retryable", False):
+            raise  # temporary outage: let the queue retry the whole message (writes are idempotent)
         log.error("tool %s failed: %s: %s", name, type(exc).__name__, exc)
         await ctx.repo.log_tool(ctx.update_id, name, digest, "error", f"{type(exc).__name__}: {exc}")
         return _msg(call_id, name, {"error": "the tool failed; nothing was saved"})

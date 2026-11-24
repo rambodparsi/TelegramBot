@@ -70,6 +70,25 @@ class Repo:
             "(SELECT count(*) FROM user_preferences WHERE user_id = ?) AS prefs", [user_id, user_id])
         return {"updates": updates, "usage": usage, "tools": tools or {}, "memory": memory or {}}
 
+    # --- planner operations (retry safety) ---------------------------------------------
+    async def get_op(self, op_key: str) -> dict[str, Any] | None:
+        return await d1.first(self.db, "SELECT op_key, status, result_json FROM planner_ops WHERE op_key = ?", [op_key])
+
+    async def start_op(self, op_key: str) -> None:
+        await d1.execute(
+            self.db,
+            "INSERT INTO planner_ops (op_key, status) VALUES (?, 'started') "
+            "ON CONFLICT(op_key) DO UPDATE SET status = 'started', updated_at = datetime('now')",
+            [op_key])
+
+    async def finish_op(self, op_key: str, result: dict[str, Any]) -> None:
+        import json as _json
+
+        await d1.execute(
+            self.db,
+            "UPDATE planner_ops SET status = 'done', result_json = ?, updated_at = datetime('now') WHERE op_key = ?",
+            [_json.dumps(result, ensure_ascii=False), op_key])
+
     async def cleanup(self) -> None:
         """Retention policy (runs daily from the cron trigger)."""
         for sql in (
@@ -77,6 +96,7 @@ class Repo:
             "DELETE FROM pending_actions WHERE expires_at < datetime('now', '-1 day')",
             "DELETE FROM usage_events WHERE created_at < datetime('now', '-180 days')",
             "DELETE FROM tool_executions WHERE created_at < datetime('now', '-180 days')",
+            "DELETE FROM planner_ops WHERE created_at < datetime('now', '-30 days')",
             # stored replies of updates that ended up failed are not needed after a day
             "UPDATE telegram_updates SET response = NULL, user_text = NULL "
             "WHERE status != 'processing' AND status != 'retry' AND updated_at < datetime('now', '-1 day')",

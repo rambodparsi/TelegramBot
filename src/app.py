@@ -9,7 +9,7 @@ import secrets
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
 
 from config import Config
 from graph.builder import RECURSION_LIMIT, build_graph
@@ -220,7 +220,8 @@ async def _process(msg: Inbound, svc: Services, claim: dict | None = None) -> st
                 attachments = [media.gemini_part()]
                 human_text = f"[Photo] {msg.text}".strip()
 
-        answer, conv = await _run_graph(msg, svc, human_text, attachments, usage)
+        retry = bool(claim and int(claim.get("attempts") or 1) > 1)
+        answer, conv = await _run_graph(msg, svc, human_text, attachments, usage, retry=retry)
     finally:
         for u in usage:
             await svc.repo.add_usage(msg.update_id, u)
@@ -239,8 +240,23 @@ async def _deliver(msg: Inbound, svc: Services, conversation_id: str, kind: str,
     return f"answered:{kind}"
 
 
+async def _repair_thread(svc: Services, config: dict) -> None:
+    """After a mid-turn failure, drop the unfinished turn so the retry starts from a clean history.
+
+    A crash between a tool call and the final answer leaves a HumanMessage and/or an AIMessage with
+    unanswered tool calls in the checkpoint; replaying the message on top of that would duplicate the
+    turn and send Gemini a function call without a response.
+    """
+    snap = await svc.graph.aget_state(config)
+    messages = (snap.values or {}).get("messages", []) if snap else []
+    last_done = max((i for i, m in enumerate(messages) if isinstance(m, AIMessage) and not m.tool_calls), default=-1)
+    tail = [m for m in messages[last_done + 1:] if m.id]
+    if tail:
+        await svc.graph.aupdate_state(config, {"messages": [RemoveMessage(id=m.id) for m in tail]}, as_node="finalize")
+
+
 async def _run_graph(msg: Inbound, svc: Services, human_text: str, attachments: list[dict],
-                     usage: list[dict]) -> tuple[str, dict]:
+                     usage: list[dict], retry: bool = False) -> tuple[str, dict]:
     conv = await svc.repo.active_conversation(msg.chat_id, msg.user_id)
     deps = Deps(
         llm=svc.llm,
@@ -264,6 +280,8 @@ async def _run_graph(msg: Inbound, svc: Services, human_text: str, attachments: 
     )
     if deps.planner is None and svc.sheets is not None:
         deps.tools = registry.tool_map()
+    if retry:
+        await _repair_thread(svc, {"configurable": {"thread_id": conv["thread_id"]}})
     result = await svc.graph.ainvoke(
         {"messages": [HumanMessage(human_text)], "current_input": msg.to_state(), "tool_call_count": 0},
         {"configurable": {"thread_id": conv["thread_id"]}, "recursion_limit": RECURSION_LIMIT},

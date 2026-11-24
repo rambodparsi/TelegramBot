@@ -126,6 +126,8 @@ class FakeSheets:
     def _user_entered(value: Any) -> Any:
         if not isinstance(value, str):
             return value
+        if value == "":
+            return None  # Google stores an empty write as an empty cell
         if value.startswith("'"):
             return value[1:]
         if value in ("TRUE", "FALSE"):

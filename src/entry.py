@@ -191,6 +191,19 @@ class Default(WorkerEntrypoint):
                         out = await planner.get_agenda(day, _dt.date.fromisoformat(q["end"]) if q.get("end") else None)
                     elif op == "slots":
                         out = await planner.find_free_slots(day, int(q.get("minutes", 60)), q.get("area"))
+                    elif op == "move":  # staging-only write check against Planner-TEST
+                        key = planner.new_op_key()
+                        out = await planner.run_op(key, lambda: planner.move(
+                            key, q["id"], start=int(q["start"])))
+                        out["_op_key"] = key
+                    elif op == "log":
+                        from planner.schema import CHANGELOG as _CL
+                        rng = _CL.a1(f"A{q.get('from', '2')}:J{q.get('to', '40')}")
+                        out = {"rows": (await svc.sheets.batch_get([rng]))[rng]}
+                    elif op == "events":
+                        from planner.schema import SCHEDULE as _S
+                        out = {"events": [[e.id, e.start, e.end, e.status] for e in await planner.store.load(_S)
+                                          if e.id in q.get("ids", "").split(",")]}
                     else:
                         out = await planner.goals(q.get("level"))
                     out["_reads"] = svc.sheets.get_calls

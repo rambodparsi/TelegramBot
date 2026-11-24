@@ -78,3 +78,8 @@ HABITS_FIRST_DATE = (2026, 11, 1)   # Habits!A2
 SETTINGS_KEYS_RANGE = "'Settings'!A2:B13"
 SETTINGS_LISTS_RANGE = "'Settings'!E1:R12"
 HABITS_HEADER_RANGE = "'Habits'!A1:K1"
+
+# Column kinds (by header name) for reading old values and formatting writes.
+DATE_COLUMNS = frozenset({"DueDate", "PlannedDate", "CompletedDate", "Date", "StartDate", "EndDate", "PeriodStart"})
+TIME_COLUMNS = frozenset({"Start", "End", "WindowStart", "WindowEnd"})
+DATETIME_COLUMNS = frozenset({"CreatedAt", "UpdatedAt", "CapturedAt", "Timestamp"})
