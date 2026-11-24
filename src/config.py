@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-MODEL_ROLES = ("chat", "vision", "transcribe", "light", "deep")
+MODEL_ROLES = ("chat", "vision", "transcribe", "light", "deep", "search")
 
 DEFAULT_MODELS = {
     "chat": "gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite",
@@ -13,6 +13,7 @@ DEFAULT_MODELS = {
     "transcribe": "gemini-3.5-transcribe,gemini-3.5-flash-lite",
     "light": "gemini-3.5-flash-lite,gemini-3.1-flash-lite",
     "deep": "gemini-3.8-flash,gemini-3.7-flash,gemini-3.5-flash",
+    "search": "gemini-3.5-flash,gemini-3.5-flash-lite",
 }
 
 
@@ -50,6 +51,8 @@ class Config:
     context_turns: int = 20
     max_state_messages: int = 40
     max_media_bytes: int = 10 * 1024 * 1024
+    tavily_api_key: str | None = None
+    search_provider: str = "tavily"    # tavily | gemini | auto (gemini first, tavily fallback)
 
     def model_chain(self, role: str) -> list[str]:
         return self.models[role]
@@ -70,6 +73,8 @@ def load_config(env: Any) -> Config:
         admin_token=_get(env, "ADMIN_TOKEN") or _get(env, "BENCH_TOKEN"),
         gemini_api_key=_get(env, "GEMINI_API_KEY") or "",
         authorized_user_ids=_parse_ids(_get(env, "AUTHORIZED_TELEGRAM_USER_IDS")),
+        tavily_api_key=_get(env, "TAVILY_API_KEY"),
+        search_provider=(_get(env, "SEARCH_PROVIDER") or "tavily").lower(),
         timezone=_get(env, "DEFAULT_TIMEZONE") or "America/Chicago",
         models=models,
         context_turns=int(_get(env, "CONTEXT_TURNS") or 20),

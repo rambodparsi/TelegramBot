@@ -31,4 +31,7 @@ class Deps:
     # Media for the *current* turn only (Gemini parts). Never checkpointed.
     attachments: list[dict[str, Any]] = field(default_factory=list)
     usage: list[dict[str, Any]] = field(default_factory=list)
+    http: Any = None                        # Http client for API-backed tools
+    tavily_api_key: str | None = None
+    search_provider: str = "tavily"
     profile: dict[str, Any] = field(default_factory=lambda: {"preferences": {}, "facts": []})

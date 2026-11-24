@@ -63,9 +63,13 @@ class FakeHttp:
         self.calls: list[tuple[str, Any]] = []
         self._gemini = gemini or (lambda model, body: gemini_text("Hello!"))
         self._next_id = 100
+        self.routes = {}
 
     async def post_json(self, url: str, payload: Any, headers: dict[str, str] | None = None) -> HttpResponse:
         self.calls.append((url, payload))
+        routed = self._route(url, payload)
+        if routed is not None:
+            return routed
         m = re.search(r"/models/([^:]+):generateContent", url)
         if m:
             return self._gemini(m.group(1), payload)
@@ -77,6 +81,20 @@ class FakeHttp:
         raise AssertionError(f"unexpected URL {url}")
 
     files: dict[str, bytes] = {}
+    routes: dict[str, Callable[[str, Any], HttpResponse]] = {}   # URL prefix -> handler(url, payload)
+
+    def _route(self, url: str, payload: Any) -> HttpResponse | None:
+        for prefix, handler in self.routes.items():
+            if url.startswith(prefix):
+                return handler(url, payload)
+        return None
+
+    async def get_json(self, url: str, headers: dict[str, str] | None = None) -> HttpResponse:
+        self.calls.append((url, None))
+        resp = self._route(url, None)
+        if resp is None:
+            raise AssertionError(f"unexpected GET {url}")
+        return resp
 
     async def get_bytes(self, url: str) -> BytesResponse:
         self.calls.append((url, None))

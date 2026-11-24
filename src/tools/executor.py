@@ -23,7 +23,9 @@ async def run_tool_call(call: dict[str, Any], ctx: ToolContext) -> ToolMessage:
     try:
         args = validate(tool.parameters, raw_args)
         result = await tool.handler(ctx, args)
-        await ctx.repo.log_tool(ctx.update_id, name, digest, "ok")
+        failed = isinstance(result, dict) and "error" in result
+        await ctx.repo.log_tool(ctx.update_id, name, digest, "error" if failed else "ok",
+                                result.get("error") if failed else None)
         return _msg(call_id, name, result)
     except ToolInputError as exc:
         await ctx.repo.log_tool(ctx.update_id, name, digest, "rejected", str(exc))

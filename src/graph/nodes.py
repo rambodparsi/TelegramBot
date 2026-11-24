@@ -71,7 +71,8 @@ async def tools_node(state: AssistantState, runtime: Runtime[Deps]) -> dict:
     last = state["messages"][-1]
     used = state.get("tool_call_count", 0)
     ctx = ToolContext(repo=deps.repo, user_id=deps.user_id, update_id=deps.update_id, profile=deps.profile,
-                      default_timezone=deps.default_timezone)
+                      default_timezone=deps.default_timezone, llm=deps.llm, models=deps.models, usage=deps.usage,
+                      http=deps.http, tavily_api_key=deps.tavily_api_key, search_provider=deps.search_provider)
     results: list[ToolMessage] = []
     for call in last.tool_calls:
         if used >= deps.max_tool_calls:

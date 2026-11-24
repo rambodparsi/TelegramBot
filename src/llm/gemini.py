@@ -31,6 +31,8 @@ class GeminiResult:
     fallbacks: int = 0
     finish_reason: str | None = None
     attempts: list[str] = field(default_factory=list)
+    sources: list[dict[str, str]] = field(default_factory=list)   # from Google Search grounding
+    search_queries: list[str] = field(default_factory=list)
 
 
 class GeminiClient:
@@ -109,6 +111,14 @@ class GeminiClient:
         text = "".join(p.get("text", "") for p in parts if "text" in p and not p.get("thought"))
         calls = [p["functionCall"] for p in parts if "functionCall" in p]
         usage = data.get("usageMetadata") or {}
+        grounding = candidate.get("groundingMetadata") or {}
+        sources, seen = [], set()
+        for chunk in grounding.get("groundingChunks") or []:
+            web = chunk.get("web") or {}
+            uri = web.get("uri")
+            if uri and uri not in seen:
+                seen.add(uri)
+                sources.append({"title": web.get("title") or web.get("domain") or uri, "url": uri})
         return GeminiResult(
             text=text.strip(),
             function_calls=calls,
@@ -117,4 +127,6 @@ class GeminiClient:
             input_tokens=int(usage.get("promptTokenCount") or 0),
             output_tokens=int(usage.get("candidatesTokenCount") or 0) + int(usage.get("thoughtsTokenCount") or 0),
             finish_reason=candidate.get("finishReason"),
+            sources=sources,
+            search_queries=list(grounding.get("webSearchQueries") or []),
         )
