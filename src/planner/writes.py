@@ -88,6 +88,7 @@ class SetHabit:
     day: dt.date
     habit: str
     value: bool | None
+    action: str = "update"
 
 
 @dataclass
@@ -118,8 +119,8 @@ class WriteBatch:
         if changes:
             self.ops.append(Update(tab, item_id, dict(changes), action))
 
-    def set_habit(self, day: dt.date, habit: str, value: bool | None) -> None:
-        self.ops.append(SetHabit(day, habit, value))
+    def set_habit(self, day: dt.date, habit: str, value: bool | None, action: str = "update") -> None:
+        self.ops.append(SetHabit(day, habit, value, action))
 
     def __bool__(self) -> bool:
         return bool(self.ops)
@@ -238,7 +239,7 @@ class WriteBatch:
                 col = 2 + slot
                 old = read_display("", line[col])
                 data.append((HABITS.a1(f"{col_letter(col)}{row}"), [[cell_value(op.value)]]))
-                log("update", "Habits", op.day.isoformat(), names[slot], old, new_display(op.value))
+                log(op.action, "Habits", op.day.isoformat(), names[slot], old, new_display(op.value))
                 result.changed_ids.append(f"{op.day.isoformat()}:{names[slot]}")
 
         if log_next + len(log_rows) - 1 > CHANGELOG.max_row:

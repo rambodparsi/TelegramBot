@@ -11,9 +11,10 @@ import json
 import uuid
 
 from planner.model import Event, Goal, Task
-from planner.schema import CHANGELOG, GOALS, HABITS, INBOX, SCHEDULE, TASKS
+from planner.schema import (CHANGELOG, DATA_TABS, DATE_COLUMNS, DATETIME_COLUMNS, GOALS, HABITS, INBOX,
+                            SCHEDULE, TASKS, TIME_COLUMNS)
 from planner.store import PlannerStore
-from planner.writes import HM, PlannerWriteError, WriteBatch
+from planner.writes import HM, PlannerWriteError, WriteBatch, read_display
 
 MAX_AGENDA_DAYS = 14
 _PRIO = {"P1": 1, "P2": 2, "P3": 3, "P4": 4}
@@ -558,3 +559,149 @@ class PlannerService:
         if "Status" in changes:
             parts.append(f"status {status}")
         return self._ok(f"Goal '{goal.title}': " + ", ".join(parts), [goal_id], res.warnings)
+
+
+    # =========================================================================================
+    # Confirmations and Undo
+    # =========================================================================================
+
+    async def execute_confirmed(self, payload: dict[str, Any], op_key: str) -> dict[str, Any]:
+        """Run an op the owner approved with a button. Skips only the confirmation rule."""
+        op, a = payload.get("op"), dict(payload.get("args") or {})
+        d = lambda x: dt.date.fromisoformat(x) if x else None  # noqa: E731
+        t = lambda x: v.parse_hhmm(x) if x else None  # noqa: E731
+        if op == "move":
+            fn = lambda: self.move(op_key, a["event_id"], d(a.get("date")), t(a.get("start")), t(a.get("end")),  # noqa: E731
+                                   confirmed=True)
+        elif op == "schedule":
+            fn = lambda: self.schedule(op_key, d(a["date"]), t(a.get("start")), t(a.get("end")), None,  # noqa: E731
+                                       a.get("task_id"), a.get("title"), a.get("area"), a.get("type"),
+                                       a.get("flexibility"), a.get("location"), a.get("notes"), confirmed=True)
+        elif op == "cancel":
+            fn = lambda: self.cancel(op_key, a["item_id"], a.get("reason"), confirmed=True)  # noqa: E731
+        elif op == "update_task":
+            fields = {k: (d(x) if k in ("due_date", "planned_date") and x not in (None, "none")
+                          else x) for k, x in a.items() if k != "task_id"}
+            fn = lambda: self.update_task(op_key, a["task_id"], confirmed=True, **fields)  # noqa: E731
+        else:
+            return {"ok": False, "error": "invalid_argument", "message": "Unknown confirmation."}
+        return await self.run_op(op_key, fn)
+
+    async def _changelog(self) -> list[list[Any]]:
+        rng = CHANGELOG.a1(f"A2:J{CHANGELOG.max_row}")
+        rows = (await self.store.sheets.batch_get([rng]))[rng]
+        return [list(r) + [None] * (10 - len(r)) for r in rows]
+
+    @staticmethod
+    def _undone_keys(log: list[list[Any]]) -> set[str]:
+        done: set[str] = set()
+        for r in log:
+            if v.to_text(r[2]) == "undo":
+                reason = v.to_text(r[8])
+                if reason.startswith("undo:"):
+                    done.update(k for k in reason[5:].split(",") if k)
+        return done
+
+    async def undo(self, op_keys: list[str], op_key: str) -> dict[str, Any]:
+        return await self.run_op(op_key, lambda: self._undo(op_keys, op_key))
+
+    async def undo_last(self, op_key: str) -> dict[str, Any]:
+        async def run():
+            log = await self._changelog()
+            undone = self._undone_keys(log)
+            for r in reversed(log):
+                key = v.to_text(r[9])
+                if key and v.to_text(r[1]) == "ai" and v.to_text(r[2]) != "undo" and key not in undone:
+                    return await self._undo([key], op_key, log)
+            return self._ok("There's nothing recent to undo.", [])
+        return await self.run_op(op_key, run)
+
+    _NUMERIC = frozenset({"EstMinutes", "Current", "Target", "DurationMin", "Energy1to5", "Mood1to5"})
+    _SOFT_DELETE = {"Tasks": ("Status", "Cancelled"), "Schedule": ("Status", "Cancelled"),
+                    "Goals": ("Status", "Dropped"), "Inbox": ("Status", "Discarded")}
+
+    def _restore_value(self, header: str, old: str) -> Any:
+        if old == "":
+            return None
+        if header in DATE_COLUMNS or header in TIME_COLUMNS or header in DATETIME_COLUMNS or header in self._NUMERIC:
+            return old  # USER_ENTERED turns these back into real dates/times/numbers
+        return v.sanitize_text(old, 500)
+
+    async def _undo(self, op_keys: list[str], op_key: str, log: list[list[Any]] | None = None) -> dict[str, Any]:
+        log = log if log is not None else await self._changelog()
+        wanted = set(op_keys)
+        if wanted & self._undone_keys(log):
+            return self._ok("Already undone.", [])
+        rows = [r for r in log if v.to_text(r[9]) in wanted and v.to_text(r[2]) != "undo"]
+        if not rows:
+            raise PlannerError("not_found", "I couldn't find that change in the ChangeLog.")
+        tabs = sorted({v.to_text(r[3]) for r in rows if v.to_text(r[3]) in DATA_TABS and v.to_text(r[3]) != "Habits"})
+        ranges = [DATA_TABS[t].data_range for t in tabs]
+        got = await self.store.sheets.batch_get(ranges) if ranges else {}
+        current: dict[tuple[str, str], list[Any]] = {}
+        for t in tabs:
+            tab = DATA_TABS[t]
+            for raw in got[tab.data_range]:
+                if raw and raw[0] not in (None, ""):
+                    current[(t, v.to_text(raw[0]))] = list(raw) + [None] * (len(tab.columns) - len(raw))
+
+        batch = WriteBatch(op_key, "undo:" + ",".join(op_keys), self.now)
+        reverted, skipped = 0, []
+        seen: set[tuple[str, str, str]] = set()
+        grouped: dict[tuple[str, str], dict[str, Any]] = {}  # one update per item (no overlapping writes)
+        habit_ok: dict[tuple[str, str, str], bool | None] = {}
+        for r in reversed(rows):
+            tab_name, item_id, field_ = v.to_text(r[3]), v.to_text(r[4]), v.to_text(r[5])
+            action, old, new = v.to_text(r[2]), v.to_text(r[6]), v.to_text(r[7])
+            key = (tab_name, item_id, field_)
+            if key in seen:
+                # An earlier change to the same field within the ops being undone: restore its older value
+                # (only if the latest change passed the "unchanged since" check).
+                if action != "create" and tab_name != "Habits" and field_ in grouped.get((tab_name, item_id), {}):
+                    grouped[(tab_name, item_id)][field_] = self._restore_value(field_, old)
+                elif tab_name == "Habits" and key in habit_ok:
+                    habit_ok[key] = None if old == "" else old == "TRUE"
+                continue
+            seen.add(key)
+            if tab_name == "Habits":
+                day = dt.date.fromisoformat(item_id)
+                now_val = (await self.store.habits_for(day, day)).get(day, {}).get(field_)
+                shown = "" if now_val is None else ("TRUE" if now_val else "FALSE")
+                if shown != new:
+                    skipped.append(f"{field_} on {item_id}")
+                    continue
+                habit_ok[key] = None if old == "" else old == "TRUE"
+                reverted += 1
+                continue
+            tab = DATA_TABS.get(tab_name)
+            row = current.get((tab_name, item_id))
+            if tab is None or row is None:
+                skipped.append(item_id)
+                continue
+            if action == "create":
+                soft = self._SOFT_DELETE.get(tab_name)
+                if soft is None:
+                    skipped.append(f"{item_id} (can't be removed; nothing is deleted)")
+                    continue
+                grouped.setdefault((tab_name, item_id), {})[soft[0]] = soft[1]
+                reverted += 1
+                continue
+            if field_ not in tab.columns:
+                skipped.append(item_id)
+                continue
+            if read_display(field_, row[tab.idx(field_)]) != new:
+                skipped.append(f"{item_id} {field_} (changed since)")
+                continue
+            grouped.setdefault((tab_name, item_id), {}).setdefault(field_, self._restore_value(field_, old))
+            reverted += 1
+        for (tab_name, item_id), changes in grouped.items():
+            batch.update(DATA_TABS[tab_name], item_id, changes, "undo")
+        for (_, day_text, habit), value in habit_ok.items():
+            batch.set_habit(dt.date.fromisoformat(day_text), habit, value, "undo")
+        if not batch:
+            return self._ok("Nothing to undo: " + "; ".join(skipped) if skipped else "Nothing to undo.", [])
+        res = await self._commit(batch)
+        summary = f"Undone ({reverted} change{'s' if reverted != 1 else ''} reverted)."
+        if skipped:
+            summary += " Not reverted, changed since: " + "; ".join(skipped[:5])
+        return self._ok(summary, res.changed_ids)

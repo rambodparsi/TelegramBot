@@ -66,6 +66,14 @@ class TelegramClient:
         except TelegramError:
             pass  # message too old or unchanged
 
+    async def remove_buttons(self, chat_id: int, message_id: int) -> None:
+        """Drop a message's inline keyboard but keep its text."""
+        try:
+            await self.call("editMessageReplyMarkup", {"chat_id": chat_id, "message_id": message_id,
+                                                       "reply_markup": {"inline_keyboard": []}})
+        except TelegramError:
+            pass
+
     async def send_typing(self, chat_id: int) -> None:
         try:
             await self.call("sendChatAction", {"chat_id": chat_id, "action": "typing"})

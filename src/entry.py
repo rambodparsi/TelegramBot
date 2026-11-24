@@ -196,6 +196,8 @@ class Default(WorkerEntrypoint):
                         out = await planner.run_op(key, lambda: planner.move(
                             key, q["id"], start=int(q["start"])))
                         out["_op_key"] = key
+                    elif op == "undo":  # staging-only: undo an op key from a previous probe write
+                        out = await planner.undo([q["key"]], planner.new_op_key())
                     elif op == "log":
                         from planner.schema import CHANGELOG as _CL
                         rng = _CL.a1(f"A{q.get('from', '2')}:J{q.get('to', '40')}")

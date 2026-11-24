@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import html
+import json
 import logging
 import secrets
 from typing import Any
@@ -112,17 +113,29 @@ class Services:
         now = self.clock() if self.clock else dt.datetime.now(tz).replace(tzinfo=None, second=0, microsecond=0)
         service = PlannerService(PlannerStore(self.sheets), self.repo, now)
         service.fixed_clock = self.clock is not None
+
+        async def ask_confirmation(pending: dict, ctx: Any) -> None:
+            token = await self.repo.create_pending(ctx.chat_id, "planner_confirm", 30, pending)
+            if ctx.buttons is not None:
+                ctx.buttons.append([("✅ Confirm", f"ok:{token}"), ("✖️ Cancel", f"no:{token}")])
+
+        service.on_confirm = ask_confirmation
         return service
+
+    def is_owner(self, user_id: int) -> bool:
+        return bool(self.cfg.authorized_user_ids) and user_id == min(self.cfg.authorized_user_ids)
 
 
 async def _reply(svc: Services, chat_id: int, markdown: str, reply_to: int | None = None,
-                 prefix_html: str = "") -> int | None:
+                 prefix_html: str = "", buttons: list | None = None) -> int | None:
     last_id = None
-    for i, chunk in enumerate(render_chunks(markdown)):
+    chunks = render_chunks(markdown)
+    for i, chunk in enumerate(chunks):
         text = (prefix_html + chunk) if i == 0 else chunk
         plain = markdown if len(markdown) < 3500 else None
         last_id = await svc.telegram.send_message(chat_id, text, plain_fallback=plain,
-                                                  reply_to=reply_to if i == 0 else None)
+                                                  reply_to=reply_to if i == 0 else None,
+                                                  buttons=buttons if i == len(chunks) - 1 else None)
     return last_id
 
 
@@ -189,8 +202,10 @@ async def _process(msg: Inbound, svc: Services, claim: dict | None = None) -> st
 
     if claim and claim.get("response"):
         # A previous attempt already generated the reply; deliver it without re-running the model.
+        stored = claim.get("response_buttons")
         return await _deliver(msg, svc, claim["conversation_id"], claim.get("kind") or msg.kind,
-                              claim.get("user_text") or "", claim["response"], claim.get("response_prefix") or "")
+                              claim.get("user_text") or "", claim["response"], claim.get("response_prefix") or "",
+                              [[tuple(b) for b in row] for row in json.loads(stored)] if stored else None)
 
     await svc.telegram.send_typing(msg.chat_id)
     usage: list[dict] = []
@@ -221,18 +236,18 @@ async def _process(msg: Inbound, svc: Services, claim: dict | None = None) -> st
                 human_text = f"[Photo] {msg.text}".strip()
 
         retry = bool(claim and int(claim.get("attempts") or 1) > 1)
-        answer, conv = await _run_graph(msg, svc, human_text, attachments, usage, retry=retry)
+        answer, conv, buttons = await _run_graph(msg, svc, human_text, attachments, usage, retry=retry)
     finally:
         for u in usage:
             await svc.repo.add_usage(msg.update_id, u)
 
-    await svc.repo.save_response(msg.update_id, conv["id"], msg.kind, human_text, answer, prefix_html)
-    return await _deliver(msg, svc, conv["id"], msg.kind, human_text, answer, prefix_html)
+    await svc.repo.save_response(msg.update_id, conv["id"], msg.kind, human_text, answer, prefix_html, buttons)
+    return await _deliver(msg, svc, conv["id"], msg.kind, human_text, answer, prefix_html, buttons)
 
 
 async def _deliver(msg: Inbound, svc: Services, conversation_id: str, kind: str, human_text: str,
-                   answer: str, prefix_html: str) -> str:
-    sent_id = await _reply(svc, msg.chat_id, answer, prefix_html=prefix_html)
+                   answer: str, prefix_html: str, buttons: list | None = None) -> str:
+    sent_id = await _reply(svc, msg.chat_id, answer, prefix_html=prefix_html, buttons=buttons)
     await svc.repo.add_message(conversation_id, "user", kind, human_text, update_id=msg.update_id,
                                telegram_message_id=msg.message_id)
     await svc.repo.add_message(conversation_id, "assistant", "text", answer, update_id=msg.update_id,
@@ -256,7 +271,7 @@ async def _repair_thread(svc: Services, config: dict) -> None:
 
 
 async def _run_graph(msg: Inbound, svc: Services, human_text: str, attachments: list[dict],
-                     usage: list[dict], retry: bool = False) -> tuple[str, dict]:
+                     usage: list[dict], retry: bool = False) -> tuple[str, dict, list]:
     conv = await svc.repo.active_conversation(msg.chat_id, msg.user_id)
     deps = Deps(
         llm=svc.llm,
@@ -275,7 +290,7 @@ async def _run_graph(msg: Inbound, svc: Services, human_text: str, attachments: 
         search_provider=svc.cfg.search_provider,
         tools=svc.tools,
         # The planner belongs to the owner only (smallest authorized ID); other users don't get it.
-        planner=svc.planner_for(svc.cfg.timezone) if msg.user_id == min(svc.cfg.authorized_user_ids) else None,
+        planner=svc.planner_for(svc.cfg.timezone) if svc.is_owner(msg.user_id) else None,
         chat_id=msg.chat_id,
     )
     if deps.planner is None and svc.sheets is not None:
@@ -287,7 +302,11 @@ async def _run_graph(msg: Inbound, svc: Services, human_text: str, attachments: 
         {"configurable": {"thread_id": conv["thread_id"]}, "recursion_limit": RECURSION_LIMIT},
         context=deps,
     )
-    return result["final_response"], conv
+    buttons = list(deps.buttons)
+    if deps.undo_ops:
+        token = await svc.repo.create_pending(msg.chat_id, "planner_undo", 120, {"op_keys": deps.undo_ops})
+        buttons.append([("↩️ Undo", f"ok:{token}")])
+    return result["final_response"], conv, buttons
 
 
 async def _command(msg: Inbound, svc: Services) -> str:
@@ -356,13 +375,44 @@ def _memory_html(profile: dict) -> str:
     return "\n".join(lines)
 
 
+async def _planner_callback(msg: Inbound, svc: Services, verb: str, token: str, action: str,
+                            payload: dict | None) -> str:
+    tg = svc.telegram
+    await tg.remove_buttons(msg.chat_id, msg.message_id)  # keep the reply text, drop its buttons
+    planner = svc.planner_for(svc.cfg.timezone) if svc.is_owner(msg.user_id) else None
+    if planner is None:
+        await tg.answer_callback(msg.callback_id or "", "The planner isn't available.")
+        return "callback:planner_unavailable"
+    if action == "planner_confirm" and verb != "ok":
+        await tg.answer_callback(msg.callback_id or "", "Cancelled")
+        await tg.send_message(msg.chat_id, "Cancelled. Nothing was changed.")
+        return "callback:cancel:planner_confirm"
+    op_key = f"cb:{token}"
+    if action == "planner_confirm":
+        result = await planner.execute_confirmed(payload or {}, op_key)
+    else:
+        result = await planner.undo((payload or {}).get("op_keys") or [], op_key)
+    ok = result.get("ok")
+    text = ("✅ " if ok else "⚠️ ") + html.escape(result.get("summary") or result.get("message") or "Done.", quote=False)
+    buttons = None
+    if action == "planner_confirm" and ok and result.get("changed"):
+        undo_token = await svc.repo.create_pending(msg.chat_id, "planner_undo", 120, {"op_keys": [op_key]})
+        buttons = [[("↩️ Undo", f"ok:{undo_token}")]]
+    await tg.answer_callback(msg.callback_id or "", "Done" if ok else "Not done")
+    await tg.send_message(msg.chat_id, text, buttons=buttons)
+    return f"callback:{action}:{'ok' if ok else result.get('error', 'failed')}"
+
+
 async def _callback(msg: Inbound, svc: Services) -> str:
     verb, _, token = msg.text.partition(":")
-    action = await svc.repo.consume_pending(token, msg.chat_id) if token else None
+    pending = await svc.repo.consume_pending_full(token, msg.chat_id) if token else None
+    action = pending["action"] if pending else None
     tg = svc.telegram
+    if action in ("planner_confirm", "planner_undo"):
+        return await _planner_callback(msg, svc, verb, token, action, pending["payload"])
     if action is None:
-        await tg.answer_callback(msg.callback_id or "", "This confirmation has expired or was already used.")
-        await tg.edit_message(msg.chat_id, msg.message_id, "⌛ This confirmation is no longer valid.")
+        await tg.answer_callback(msg.callback_id or "", "This button has expired or was already used.")
+        await tg.remove_buttons(msg.chat_id, msg.message_id)  # keep the message text
         return "callback:invalid"
     if verb != "ok":
         await tg.answer_callback(msg.callback_id or "", "Cancelled")

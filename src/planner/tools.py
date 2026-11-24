@@ -90,7 +90,9 @@ async def _write(ctx: ToolContext, name: str, args: dict[str, Any], fn) -> dict[
     pending = result.pop("_pending", None)
     if result.get("needs_confirmation") and pending is not None and ctx.planner.on_confirm is not None:
         await ctx.planner.on_confirm(pending, ctx)
-    if result.get("ok") and result.get("changed") and not result.get("replayed") and ctx.undo_ops is not None:
+    # Replayed results (queue retry of the same message) still belong to this message's Undo button.
+    if result.get("ok") and result.get("changed") and ctx.undo_ops is not None and key not in ctx.undo_ops \
+            and name != "planner_undo_last":
         ctx.undo_ops.append(key)
     return result
 
@@ -149,6 +151,10 @@ async def _capture(ctx, args):
     return await _write(ctx, "planner_capture", args, lambda p, k: p.capture(k, args["text"]))
 
 
+async def _undo_last(ctx, args):
+    return await _write(ctx, "planner_undo_last", args, lambda p, k: p.undo_last(k))
+
+
 async def _update_goal(ctx, args):
     return await _write(ctx, "planner_update_goal", args, lambda p, k: p.update_goal(
         k, args["goal_id"], args.get("current"), args.get("status")))
@@ -197,7 +203,9 @@ WRITE_TOOLS: list[Tool] = [
              "date": DATE, "start": TIME, "end": TIME,
              "minutes": {**MINUTES, "description": "Length when end is omitted (default: task estimate or 60)"},
              "task_id": TASK_ID,
-             "title": {"type": "string", "maxLength": 120, "description": "Required if no task_id"},
+             "title": {"type": "string", "maxLength": 120,
+                       "description": "Required if no task_id. Descriptive, e.g. 'Dentist appointment', "
+                                      "never just 'Event'"},
              "area": {**AREA, "description": "Required if no task_id. " + AREA["description"]},
              "type": {"type": "string", "enum": ["Event", "Task block", "Routine", "Focus", "Break", "Travel"]},
              "flexibility": {"type": "string", "enum": ["Fixed", "Flexible"],
@@ -240,6 +248,12 @@ WRITE_TOOLS: list[Tool] = [
           "required": ["goal_id"]},
          "write", _update_goal),
 ]
+
+WRITE_TOOLS.append(Tool(
+    "planner_undo_last",
+    "Undo the most recent change the assistant made in the planner. Use when the owner says 'undo', 'revert "
+    "that' or similar.",
+    {"type": "object", "properties": {}}, "write", _undo_last))
 
 PLANNER_TOOLS: list[Tool] = WRITE_TOOLS + [
     Tool("planner_get_agenda",

@@ -27,17 +27,21 @@ class Repo:
             "updated_at = datetime('now') "
             "WHERE telegram_updates.status = 'retry' OR (telegram_updates.status = 'processing' "
             f"AND telegram_updates.updated_at < datetime('now', '-{int(lease_minutes)} minutes')) "
-            "RETURNING update_id, attempts, response, response_prefix, conversation_id, kind, user_text",
+            "RETURNING update_id, attempts, response, response_prefix, conversation_id, kind, user_text, "
+            "response_buttons",
             [update_id, chat_id],
         )
 
     async def save_response(self, update_id: int, conversation_id: str, kind: str, user_text: str,
-                            response: str, prefix: str) -> None:
+                            response: str, prefix: str, buttons: list | None = None) -> None:
+        import json as _json
+
         await d1.execute(
             self.db,
             "UPDATE telegram_updates SET response = ?, response_prefix = ?, conversation_id = ?, kind = ?, "
-            "user_text = ?, updated_at = datetime('now') WHERE update_id = ?",
-            [response, prefix, conversation_id, kind, user_text, update_id],
+            "user_text = ?, response_buttons = ?, updated_at = datetime('now') WHERE update_id = ?",
+            [response, prefix, conversation_id, kind, user_text,
+             _json.dumps(buttons) if buttons else None, update_id],
         )
 
     async def finish_update(self, update_id: int, status: str, error: str | None = None) -> None:
@@ -203,13 +207,17 @@ class Repo:
             [update_id, name, args_hash, status, error[:300] if error else None])
 
     # --- one-time confirmations -----------------------------------------------------
-    async def create_pending(self, chat_id: int, action: str, ttl_minutes: int = 10) -> str:
+    async def create_pending(self, chat_id: int, action: str, ttl_minutes: int = 10,
+                             payload: dict[str, Any] | None = None) -> str:
+        import json as _json
+
         token = secrets.token_urlsafe(12)
         await d1.execute(
             self.db,
-            "INSERT INTO pending_actions (token, chat_id, action, expires_at) "
-            "VALUES (?, ?, ?, datetime('now', ?))",
-            [token, chat_id, action, f"+{ttl_minutes} minutes"])
+            "INSERT INTO pending_actions (token, chat_id, action, expires_at, payload) "
+            "VALUES (?, ?, ?, datetime('now', ?), ?)",
+            [token, chat_id, action, f"+{ttl_minutes} minutes",
+             _json.dumps(payload, ensure_ascii=False) if payload is not None else None])
         return token
 
     async def consume_pending(self, token: str, chat_id: int) -> str | None:
@@ -220,6 +228,19 @@ class Repo:
             "AND used_at IS NULL AND expires_at > datetime('now') RETURNING action",
             [token, chat_id])
         return row["action"] if row else None
+
+    async def consume_pending_full(self, token: str, chat_id: int) -> dict[str, Any] | None:
+        """Like consume_pending, but also returns the stored JSON payload."""
+        import json as _json
+
+        row = await d1.first(
+            self.db,
+            "UPDATE pending_actions SET used_at = datetime('now') WHERE token = ? AND chat_id = ? "
+            "AND used_at IS NULL AND expires_at > datetime('now') RETURNING action, payload",
+            [token, chat_id])
+        if not row:
+            return None
+        return {"action": row["action"], "payload": _json.loads(row["payload"]) if row.get("payload") else None}
 
     # --- history deletion -------------------------------------------------------------
     async def delete_history(self, chat_id: int) -> list[str]:
