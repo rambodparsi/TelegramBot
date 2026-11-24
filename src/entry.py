@@ -33,6 +33,7 @@ from config import ConfigError, load_config
 from http_client import WorkerHttp
 from telegram.parser import parse_update
 
+PLANNER_CRON = "5 * * * *"  # hourly; must match wrangler.jsonc
 MAX_ATTEMPTS = 4  # must match the queue consumer's max_retries + 1 in wrangler.jsonc
 
 log = logging.getLogger("assistant")
@@ -134,11 +135,16 @@ class Default(WorkerEntrypoint):
                 message.ack()
 
     async def scheduled(self, controller, *args):
+        cron = str(getattr(controller, "cron", "") or "")
         try:
-            await self._services().repo.cleanup()
-            log.info("daily cleanup done")
+            svc = self._services()
+            if cron == PLANNER_CRON:
+                log.info("planner tick -> %s", await app.planner_tick(svc))
+            else:
+                await svc.repo.cleanup()
+                log.info("daily cleanup done")
         except Exception:
-            log.error("cleanup failed: %s", traceback.format_exc()[-1500:])
+            log.error("scheduled job %s failed: %s", cron, traceback.format_exc()[-1500:])
 
     async def _admin(self, request, path, url):
         try:
@@ -178,6 +184,41 @@ class Default(WorkerEntrypoint):
             elif path == "/bench/gemini":
                 out = await bench.graph_gemini(self.env.DB, thread, text, str(self.env.GEMINI_API_KEY),
                                                q.get("model", "gemini-3.5-flash-lite"))
+            elif path == "/bench/planner":
+                svc = self._services()
+                planner = svc.planner_for(svc.cfg.timezone)
+                if planner is None:
+                    out = {"error": "planner disabled"}
+                else:
+                    import datetime as _dt
+                    day = _dt.date.fromisoformat(q.get("date", planner.today.isoformat()))
+                    op = q.get("op", "agenda")
+                    if op == "agenda":
+                        out = await planner.get_agenda(day, _dt.date.fromisoformat(q["end"]) if q.get("end") else None)
+                    elif op == "slots":
+                        out = await planner.find_free_slots(day, int(q.get("minutes", 60)), q.get("area"))
+                    elif op == "move":  # staging-only write check against Planner-TEST
+                        key = planner.new_op_key()
+                        out = await planner.run_op(key, lambda: planner.move(
+                            key, q["id"], start=int(q["start"])))
+                        out["_op_key"] = key
+                    elif op == "undo":  # staging-only: undo an op key from a previous probe write
+                        out = await planner.undo([q["key"]], planner.new_op_key())
+                    elif op == "preview":  # staging-only: build the brief/check-in text without sending
+                        from planner.briefing import evening_checkin, morning_brief
+                        agenda = await planner.get_agenda(day)
+                        out = {"text": (morning_brief if q.get("kind", "brief") == "brief" else evening_checkin)(agenda)[0]}
+                    elif op == "log":
+                        from planner.schema import CHANGELOG as _CL
+                        rng = _CL.a1(f"A{q.get('from', '2')}:J{q.get('to', '40')}")
+                        out = {"rows": (await svc.sheets.batch_get([rng]))[rng]}
+                    elif op == "events":
+                        from planner.schema import SCHEDULE as _S
+                        out = {"events": [[e.id, e.start, e.end, e.status] for e in await planner.store.load(_S)
+                                          if e.id in q.get("ids", "").split(",")]}
+                    else:
+                        out = await planner.goals(q.get("level"))
+                    out["_reads"] = svc.sheets.get_calls
             elif path == "/bench/search":
                 from config import DEFAULT_MODELS
                 from llm.gemini import GeminiClient

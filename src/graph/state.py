@@ -26,7 +26,7 @@ class Deps:
     default_timezone: str = "America/Chicago"
     context_turns: int = 20
     max_state_messages: int = 40
-    max_tool_calls: int = 4
+    max_tool_calls: int = 8
     run_id: str = "run"
     # Media for the *current* turn only (Gemini parts). Never checkpointed.
     attachments: list[dict[str, Any]] = field(default_factory=list)
@@ -34,4 +34,9 @@ class Deps:
     http: Any = None                        # Http client for API-backed tools
     tavily_api_key: str | None = None
     search_provider: str = "tavily"
+    tools: dict[str, Any] | None = None     # tool map for this run (None = base tools)
+    planner: Any = None                     # PlannerService for this message, or None when disabled
+    chat_id: int = 0
+    buttons: list[list[tuple[str, str]]] = field(default_factory=list)
+    undo_ops: list[str] = field(default_factory=list)
     profile: dict[str, Any] = field(default_factory=lambda: {"preferences": {}, "facts": []})

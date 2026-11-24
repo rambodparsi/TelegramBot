@@ -87,20 +87,20 @@ async def test_unknown_tool_and_bad_timezone():
 
 
 async def test_tool_budget_stops_the_loop():
-    script = Script(*[call("get_current_datetime") for _ in range(4)], text("It's noon."))
+    script = Script(*[call("get_current_datetime") for _ in range(8)], text("It's noon."))
     _, http, svc = _svc(script)
     assert await app.handle_update(_update(1, "time?"), svc) == "answered:text"
-    assert len(script.requests) == 5
+    assert len(script.requests) == 9
     assert "tools" in script.requests[0] and "tools" not in script.requests[-1]  # tools withdrawn at budget
     assert http.telegram("sendMessage")[-1]["text"] == "It's noon."
 
 
 async def test_tool_count_resets_each_turn():
-    script = Script(*[call("get_current_datetime") for _ in range(4)], text("a"), call("get_current_datetime"), text("b"))
+    script = Script(*[call("get_current_datetime") for _ in range(8)], text("a"), call("get_current_datetime"), text("b"))
     _, _, svc = _svc(script)
     await app.handle_update(_update(1, "one"), svc)
     await app.handle_update(_update(2, "two"), svc)
-    assert "tools" in script.requests[5]  # fresh budget on the second turn
+    assert "tools" in script.requests[9]  # fresh budget on the second turn
 
 
 async def test_datetime_uses_saved_timezone():

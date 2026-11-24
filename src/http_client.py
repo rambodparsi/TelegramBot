@@ -29,6 +29,9 @@ class Http(Protocol):
 
     async def get_json(self, url: str, headers: dict[str, str] | None = None) -> HttpResponse: ...
 
+    async def request(self, method: str, url: str, *, body: str | bytes | None = None,
+                      headers: dict[str, str] | None = None) -> HttpResponse: ...
+
 
 class WorkerHttp:
     """Implementation backed by the Workers ``fetch`` API."""
@@ -54,4 +57,14 @@ class WorkerHttp:
         from workers import fetch
 
         resp = await fetch(url, method="GET", headers={"accept": "application/json", **(headers or {})})
+        return HttpResponse(status=int(resp.status), text=await resp.text())
+
+    async def request(self, method: str, url: str, *, body: str | bytes | None = None,
+                      headers: dict[str, str] | None = None) -> HttpResponse:
+        from workers import fetch
+
+        kwargs: dict[str, Any] = {"method": method, "headers": headers or {}}
+        if body is not None:
+            kwargs["body"] = body
+        resp = await fetch(url, **kwargs)
         return HttpResponse(status=int(resp.status), text=await resp.text())

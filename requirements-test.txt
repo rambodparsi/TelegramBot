@@ -9,3 +9,4 @@ ormsgpack>=1.12
 pytest>=8
 pytest-asyncio>=0.23
 tzdata
+openpyxl

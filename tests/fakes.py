@@ -103,6 +103,24 @@ class FakeHttp:
             return BytesResponse(404, b"")
         return BytesResponse(200, self.files[name])
 
+    sheets: Any = None          # tests.sheets_fake.FakeSheets
+    token_calls: int = 0
+
+    async def request(self, method: str, url: str, *, body: Any = None,
+                      headers: dict[str, str] | None = None) -> HttpResponse:
+        self.calls.append((url, body))
+        if url == "https://oauth2.googleapis.com/token":
+            self.token_calls += 1
+            return HttpResponse(200, json.dumps({"access_token": "test-token", "expires_in": 3599,
+                                                 "token_type": "Bearer"}))
+        if url.startswith("https://sheets.googleapis.com/v4/spreadsheets/"):
+            assert self.sheets is not None, "FakeHttp.sheets not set"
+            return self.sheets.handle(method, url, body)
+        routed = self._route(url, body)
+        if routed is not None:
+            return routed
+        raise AssertionError(f"unexpected request {method} {url}")
+
     def telegram(self, method: str) -> list[dict]:
         return [p for u, p in self.calls if u.endswith("/" + method)]
 

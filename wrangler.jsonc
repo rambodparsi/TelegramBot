@@ -14,6 +14,10 @@
       "name": "tg-assistant-staging",
       "vars": {
         "APP_ENV": "staging",
+        // Planner (Google Sheet). Staging MUST use the Planner-TEST copy.
+        "PLANNER_SHEET_ID": "1Gx8U43J7hXYXLNzcZREKkBcznAO1CDb55EfMXoCPHos",
+        "PLANNER_BRIEF_HOUR": "7",      // owner's local hour for the morning brief (empty = off)
+        "PLANNER_CHECKIN_HOUR": "21",   // owner's local hour for the evening check-in (empty = off)
         "DEFAULT_TIMEZONE": "America/Chicago",
         "MAX_MEDIA_MB": "10",
         "MODEL_CHAT": "gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite",
@@ -44,12 +48,16 @@
           "dead_letter_queue": "tg-assistant-staging-dlq"
         }]
       },
-      "triggers": { "crons": ["17 9 * * *"] }
+      "triggers": { "crons": ["17 9 * * *", "5 * * * *"] }  // cleanup; planner brief/check-in
     },
     "production": {
       "name": "tg-assistant",
       "vars": {
         "APP_ENV": "production",
+        // Planner (Google Sheet). Empty = planner off. Real sheet: 1GLngCyjfs5S8bH0lArXsqw3VZdJXhR2SZtZw4bFNOjo
+        "PLANNER_SHEET_ID": "",
+        "PLANNER_BRIEF_HOUR": "7",
+        "PLANNER_CHECKIN_HOUR": "21",
         "DEFAULT_TIMEZONE": "America/Chicago",
         "MAX_MEDIA_MB": "10",
         "MODEL_CHAT": "gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite",
@@ -80,7 +88,7 @@
           "dead_letter_queue": "tg-assistant-dlq"
         }]
       },
-      "triggers": { "crons": ["17 9 * * *"] }
+      "triggers": { "crons": ["17 9 * * *", "5 * * * *"] }  // cleanup; planner brief/check-in
     }
   }
 }

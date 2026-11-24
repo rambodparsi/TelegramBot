@@ -8,7 +8,7 @@ from graph import nodes
 from graph.state import AssistantState, Deps
 
 # START -> load_context -> agent -(tool calls?)-> tools -> agent ... -> finalize -> END
-RECURSION_LIMIT = 16
+RECURSION_LIMIT = 24
 
 
 def build_graph(checkpointer: Any):
