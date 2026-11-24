@@ -21,7 +21,7 @@ PREFERENCE_KEYS = {
 MAX_FACTS = 100
 MAX_FACT_LEN = 300
 MAX_VALUE_LEN = 200
-_LOCAL_ONLY_KEYS = {"maxLength"}
+_LOCAL_ONLY_KEYS = {"maxLength", "format", "minimum", "maximum", "pattern", "allowNone"}
 
 
 class ToolInputError(ValueError):
@@ -41,6 +41,11 @@ class ToolContext:
     http: Any = None
     tavily_api_key: str | None = None
     search_provider: str = "tavily"
+    planner: Any = None                      # planner.service.PlannerService for this message
+    chat_id: int = 0
+    buttons: list | None = None              # reference to Deps.buttons (inline keyboard rows)
+    undo_ops: list | None = None             # reference to Deps.undo_ops
+    tools: dict[str, Any] | None = None      # tool map for this run (TOOLS + enabled extras)
 
 
 Handler = Callable[[ToolContext, dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -66,8 +71,41 @@ def args_hash(args: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(args, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
 
 
+_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+
+
+def normalize_digits(text: str) -> str:
+    """Persian and Arabic-Indic digits -> ASCII (Farsi users type them in dates and times)."""
+    return text.translate(_DIGITS)
+
+
+def _check_date(key: str, value: str) -> str:
+    try:
+        parsed = dt.date.fromisoformat(value)
+    except ValueError:
+        raise ToolInputError(f"{key} must be a date like 2026-11-24 (YYYY-MM-DD)") from None
+    if len(value) != 10:
+        raise ToolInputError(f"{key} must be a date like 2026-11-24 (YYYY-MM-DD)")
+    return parsed.isoformat()
+
+
+def _check_time(key: str, value: str) -> str:
+    import re
+
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", value)
+    if not m or int(m.group(2)) > 59 or int(m.group(1)) > 24 or (int(m.group(1)) == 24 and m.group(2) != "00"):
+        raise ToolInputError(f"{key} must be a 24-hour time like 07:30 (00:00-24:00)")
+    return f"{int(m.group(1)):02d}:{m.group(2)}"
+
+
 def validate(schema: dict[str, Any], args: Any) -> dict[str, Any]:
-    """Validate a flat object against the small JSON-schema subset our tools use."""
+    """Validate a flat object against the small JSON-schema subset our tools use.
+
+    Supported: type string/integer/number/boolean, enum, maxLength; and local-only keys
+    format (date|time), minimum, maximum, pattern, allowNone (accept "none" to clear a date).
+    """
+    import re
+
     if args is None:
         args = {}
     if not isinstance(args, dict):
@@ -81,6 +119,8 @@ def validate(schema: dict[str, Any], args: Any) -> dict[str, Any]:
             raise ToolInputError(f"missing required argument: {req}")
     clean: dict[str, Any] = {}
     for key, value in args.items():
+        if value is None:
+            continue  # treat explicit nulls as "not given"
         spec = props[key]
         kind = spec.get("type")
         if kind == "string":
@@ -89,11 +129,38 @@ def validate(schema: dict[str, Any], args: Any) -> dict[str, Any]:
             value = value.strip()
             if "maxLength" in spec and len(value) > spec["maxLength"]:
                 raise ToolInputError(f"{key} is too long (max {spec['maxLength']} chars)")
-        elif kind == "integer":
-            if isinstance(value, float) and value.is_integer():
+            fmt = spec.get("format")
+            if fmt or "pattern" in spec:
+                value = normalize_digits(value)
+            if spec.get("allowNone") and value.lower() == "none":
+                value = "none"
+            elif fmt == "date":
+                value = _check_date(key, value)
+            elif fmt == "time":
+                value = _check_time(key, value)
+            if "pattern" in spec and value != "none" and not re.fullmatch(spec["pattern"], value):
+                raise ToolInputError(f"{key} has the wrong format")
+        elif kind in ("integer", "number"):
+            if isinstance(value, str):
+                try:
+                    value = float(normalize_digits(value).replace(",", ""))
+                except ValueError:
+                    raise ToolInputError(f"{key} must be a number") from None
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ToolInputError(f"{key} must be a number")
+            if kind == "integer":
+                if isinstance(value, float) and not value.is_integer():
+                    raise ToolInputError(f"{key} must be a whole number")
                 value = int(value)
-            if not isinstance(value, int) or isinstance(value, bool):
-                raise ToolInputError(f"{key} must be an integer")
+            if "minimum" in spec and value < spec["minimum"]:
+                raise ToolInputError(f"{key} must be at least {spec['minimum']}")
+            if "maximum" in spec and value > spec["maximum"]:
+                raise ToolInputError(f"{key} must be at most {spec['maximum']}")
+        elif kind == "boolean":
+            if isinstance(value, str) and value.lower() in ("true", "false"):
+                value = value.lower() == "true"
+            if not isinstance(value, bool):
+                raise ToolInputError(f"{key} must be true or false")
         if "enum" in spec and value not in spec["enum"]:
             raise ToolInputError(f"{key} must be one of: {', '.join(spec['enum'])}")
         clean[key] = value
@@ -342,5 +409,13 @@ TOOLS: dict[str, Tool] = {t.name: t for t in [
 ]}
 
 
-def declarations() -> list[dict[str, Any]]:
-    return [{"functionDeclarations": [t.declaration() for t in TOOLS.values()]}]
+def tool_map(extra: list[Tool] | None = None) -> dict[str, Tool]:
+    """Base tools plus optional extras (e.g. planner tools when the planner is enabled)."""
+    merged = dict(TOOLS)
+    for t in extra or []:
+        merged[t.name] = t
+    return merged
+
+
+def declarations(tools: dict[str, Tool] | None = None) -> list[dict[str, Any]]:
+    return [{"functionDeclarations": [t.declaration() for t in (tools or TOOLS).values()]}]

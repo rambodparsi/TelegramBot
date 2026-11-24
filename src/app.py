@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import html
 import logging
 import secrets
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from langchain_core.messages import HumanMessage
 
@@ -17,7 +19,13 @@ from media.download import MediaError, download
 from media.transcribe import transcribe
 from memory.checkpointer import D1CheckpointSaver
 from storage.repo import Repo
+from planner.google_auth import GoogleAuthError, ServiceAccountAuth
+from planner.service import PlannerService
+from planner.sheets import SheetsClient, SheetsError
+from planner.store import PlannerStore
+from planner.tools import PLANNER_TOOLS
 from storage.d1 import D1Error
+from tools import registry
 from telegram.client import TelegramClient, TelegramError
 from telegram.format import render_chunks
 from telegram.parser import Inbound, parse_update
@@ -68,6 +76,8 @@ def is_retryable(exc: BaseException) -> bool:
         return exc.retryable
     if isinstance(exc, TelegramError):
         return exc.status == 429 or exc.status >= 500
+    if isinstance(exc, (SheetsError, GoogleAuthError)):
+        return exc.retryable
     return isinstance(exc, (D1Error, OSError, ConnectionError, TimeoutError))
 
 
@@ -80,6 +90,29 @@ class Services:
         self.llm = GeminiClient(cfg.gemini_api_key, http)
         self.saver = D1CheckpointSaver(db)
         self.graph = build_graph(self.saver)
+        # Planner (Google Sheets): long-lived client so the OAuth token is cached per isolate.
+        self.sheets: SheetsClient | None = None
+        if cfg.planner_enabled:
+            try:
+                auth = ServiceAccountAuth(cfg.google_service_account_json or "", http)
+                self.sheets = SheetsClient(cfg.planner_sheet_id or "", auth, http)
+            except GoogleAuthError as exc:
+                log.error("planner disabled: %s", exc)
+        self.tools = registry.tool_map(PLANNER_TOOLS if self.sheets else None)
+        self.clock = None  # tests may set a callable returning the owner's local "now"
+
+    def planner_for(self, timezone: str) -> PlannerService | None:
+        """A fresh PlannerService (with its own per-message read cache), or None when disabled."""
+        if self.sheets is None:
+            return None
+        try:
+            tz = ZoneInfo(timezone)
+        except Exception:
+            tz = ZoneInfo(self.cfg.timezone)
+        now = self.clock() if self.clock else dt.datetime.now(tz).replace(tzinfo=None, second=0, microsecond=0)
+        service = PlannerService(PlannerStore(self.sheets), self.repo, now)
+        service.fixed_clock = self.clock is not None
+        return service
 
 
 async def _reply(svc: Services, chat_id: int, markdown: str, reply_to: int | None = None,
@@ -224,7 +257,13 @@ async def _run_graph(msg: Inbound, svc: Services, human_text: str, attachments: 
         http=svc.http,
         tavily_api_key=svc.cfg.tavily_api_key,
         search_provider=svc.cfg.search_provider,
+        tools=svc.tools,
+        # The planner belongs to the owner only (smallest authorized ID); other users don't get it.
+        planner=svc.planner_for(svc.cfg.timezone) if msg.user_id == min(svc.cfg.authorized_user_ids) else None,
+        chat_id=msg.chat_id,
     )
+    if deps.planner is None and svc.sheets is not None:
+        deps.tools = registry.tool_map()
     result = await svc.graph.ainvoke(
         {"messages": [HumanMessage(human_text)], "current_input": msg.to_state(), "tool_call_count": 0},
         {"configurable": {"thread_id": conv["thread_id"]}, "recursion_limit": RECURSION_LIMIT},

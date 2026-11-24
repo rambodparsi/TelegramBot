@@ -178,6 +178,22 @@ class Default(WorkerEntrypoint):
             elif path == "/bench/gemini":
                 out = await bench.graph_gemini(self.env.DB, thread, text, str(self.env.GEMINI_API_KEY),
                                                q.get("model", "gemini-3.5-flash-lite"))
+            elif path == "/bench/planner":
+                svc = self._services()
+                planner = svc.planner_for(svc.cfg.timezone)
+                if planner is None:
+                    out = {"error": "planner disabled"}
+                else:
+                    import datetime as _dt
+                    day = _dt.date.fromisoformat(q.get("date", planner.today.isoformat()))
+                    op = q.get("op", "agenda")
+                    if op == "agenda":
+                        out = await planner.get_agenda(day, _dt.date.fromisoformat(q["end"]) if q.get("end") else None)
+                    elif op == "slots":
+                        out = await planner.find_free_slots(day, int(q.get("minutes", 60)), q.get("area"))
+                    else:
+                        out = await planner.goals(q.get("level"))
+                    out["_reads"] = svc.sheets.get_calls
             elif path == "/bench/search":
                 from config import DEFAULT_MODELS
                 from llm.gemini import GeminiClient

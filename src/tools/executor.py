@@ -15,7 +15,7 @@ log = logging.getLogger("assistant")
 
 async def run_tool_call(call: dict[str, Any], ctx: ToolContext) -> ToolMessage:
     name, raw_args, call_id = call.get("name", ""), call.get("args") or {}, call["id"]
-    tool = TOOLS.get(name)
+    tool = (ctx.tools or TOOLS).get(name)
     digest = args_hash(raw_args if isinstance(raw_args, dict) else {"_": str(raw_args)})
     if tool is None:
         await ctx.repo.log_tool(ctx.update_id, name or "?", digest, "rejected", "unknown tool")

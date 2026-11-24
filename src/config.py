@@ -52,10 +52,26 @@ class Config:
     max_state_messages: int = 40
     max_media_bytes: int = 10 * 1024 * 1024
     tavily_api_key: str | None = None
+    planner_sheet_id: str | None = None
+    google_service_account_json: str | None = field(default=None, repr=False)
+    planner_brief_hour: int | None = None
+    planner_checkin_hour: int | None = None
     search_provider: str = "tavily"    # tavily | gemini | auto (gemini first, tavily fallback)
+
+    @property
+    def planner_enabled(self) -> bool:
+        return bool(self.planner_sheet_id and self.google_service_account_json)
 
     def model_chain(self, role: str) -> list[str]:
         return self.models[role]
+
+
+def _hour(raw: str | None) -> int | None:
+    try:
+        hour = int(raw) if raw else None
+    except ValueError:
+        return None
+    return hour if hour is not None and 0 <= hour <= 23 else None
 
 
 def load_config(env: Any) -> Config:
@@ -74,6 +90,10 @@ def load_config(env: Any) -> Config:
         gemini_api_key=_get(env, "GEMINI_API_KEY") or "",
         authorized_user_ids=_parse_ids(_get(env, "AUTHORIZED_TELEGRAM_USER_IDS")),
         tavily_api_key=_get(env, "TAVILY_API_KEY"),
+        planner_sheet_id=_get(env, "PLANNER_SHEET_ID"),
+        google_service_account_json=_get(env, "GOOGLE_SERVICE_ACCOUNT_JSON"),
+        planner_brief_hour=_hour(_get(env, "PLANNER_BRIEF_HOUR")),
+        planner_checkin_hour=_hour(_get(env, "PLANNER_CHECKIN_HOUR")),
         search_provider=(_get(env, "SEARCH_PROVIDER") or "tavily").lower(),
         timezone=_get(env, "DEFAULT_TIMEZONE") or "America/Chicago",
         models=models,

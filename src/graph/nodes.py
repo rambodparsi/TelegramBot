@@ -35,6 +35,9 @@ async def load_context(state: AssistantState, runtime: Runtime[Deps]) -> dict:
     deps = runtime.context
     if deps.repo is not None and deps.user_id:
         deps.profile = await deps.repo.profile(deps.user_id)
+    tz_pref = deps.profile.get("preferences", {}).get("timezone")
+    if deps.planner is not None and tz_pref:
+        deps.planner.set_timezone(tz_pref)
     return {}
 
 
@@ -48,9 +51,9 @@ async def agent(state: AssistantState, runtime: Runtime[Deps]) -> dict:
         contents[-1] = {"role": "user", "parts": [*deps.attachments, *contents[-1]["parts"]]}
         role = "vision"
     # Once the per-turn tool budget is spent, stop offering tools so the model must answer.
-    tools = registry.declarations() if state.get("tool_call_count", 0) < deps.max_tool_calls else None
+    tools = registry.declarations(deps.tools) if state.get("tool_call_count", 0) < deps.max_tool_calls else None
     result = await deps.llm.generate(
-        deps.models[role], contents, system=render_system_prompt(deps.profile, deps.default_timezone),
+        deps.models[role], contents, system=render_system_prompt(deps.profile, deps.default_timezone, planner_enabled=deps.planner is not None),
         tools=tools, max_output_tokens=2048,
     )
     deps.usage.append({
@@ -72,7 +75,9 @@ async def tools_node(state: AssistantState, runtime: Runtime[Deps]) -> dict:
     used = state.get("tool_call_count", 0)
     ctx = ToolContext(repo=deps.repo, user_id=deps.user_id, update_id=deps.update_id, profile=deps.profile,
                       default_timezone=deps.default_timezone, llm=deps.llm, models=deps.models, usage=deps.usage,
-                      http=deps.http, tavily_api_key=deps.tavily_api_key, search_provider=deps.search_provider)
+                      http=deps.http, tavily_api_key=deps.tavily_api_key, search_provider=deps.search_provider,
+                      planner=deps.planner, chat_id=deps.chat_id, buttons=deps.buttons, undo_ops=deps.undo_ops,
+                      tools=deps.tools)
     results: list[ToolMessage] = []
     for call in last.tool_calls:
         if used >= deps.max_tool_calls:
